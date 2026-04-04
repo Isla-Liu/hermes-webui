@@ -198,7 +198,6 @@ function renderSessionListFromCache(){
   // Date grouping: Pinned / Today / Yesterday / Earlier
   const now=Date.now();
   const ONE_DAY=86400000;
-  const ordered=[...pinned,...unpinned].slice(0,50);
   // Collapse state persisted in localStorage
   let _groupCollapsed={};
   try{_groupCollapsed=JSON.parse(localStorage.getItem('hermes-date-groups-collapsed')||'{}');}catch(e){}
@@ -244,6 +243,7 @@ function renderSessionListFromCache(){
     list.appendChild(wrapper);
   }
   // ── Render session items (extracted for group body use) ──
+  // Note: declared after the groups loop but available via function hoisting.
   function _renderOneSession(s){
     const el=document.createElement('div');
     const isActive=S.session&&s.session_id===S.session.session_id;
