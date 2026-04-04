@@ -192,8 +192,17 @@
 - [x] Multi-profile support — create, switch, delete profiles (Sprint 22, Issue #28)
 
 ### Advanced / Future
+- [ ] Subagent session tree -- show subagent hierarchy in sidebar with expand/collapse (PR #75)
+- [ ] Specialized tool card renderers -- diff viewer, terminal output, todo checklist views (PR #75)
+- [ ] Streaming performance -- requestAnimationFrame throttled token rendering for smoother output (PR #75)
+- [ ] Git integration modal -- branch, status, log, diff viewer in workspace panel (PR #75)
+- [ ] Collapsible date groups -- click Today/Yesterday/Earlier headers to collapse session groups (PR #75)
+- [ ] LLM-generated session titles -- auto-title via small model instead of first-message substring (PR #75)
+- [ ] Workspace git detection -- show branch name, dirty status in workspace header (PR #75)
+- [ ] Clarify dialog -- agent can ask clarifying questions that block until user responds (PR #75)
+- [ ] Gateway approval polling -- support blocking approvals from messaging gateway (PR #75)
+- [ ] Unified session storage -- SessionDB shared between webui and CLI (PR #75)
 - [ ] TTS playback of responses (deferred)
-- [ ] Subagent delegation cards (deferred)
 - [x] Background task cancel (activity bar Cancel button)
 - [ ] Code execution cell (deferred)
 - [ ] Desktop application (deferred)
