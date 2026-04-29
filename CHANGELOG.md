@@ -4,6 +4,11 @@
 
 ### Fixed
 
+## [v0.50.239] — 2026-04-29
+
+### Fixed
+- **h4–h6 markdown headings now render correctly** — `renderMd()` heading replacers are now applied longest-first (`######` before `#####` before `####` before `###`…), fixing the regression where h4–h6 headings were emitted as literal `#` text. CSS adds correct font sizes and `color:var(--muted)` for h6. (`static/ui.js`, `static/style.css`) @the-own-lab — Closes #1258
+
 ## [v0.50.238] — 2026-04-29
 
 ### Added
