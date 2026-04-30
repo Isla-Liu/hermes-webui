@@ -141,6 +141,10 @@ async function send(){
   let uploaded=[];
   try{uploaded=await uploadPendingFiles();}
   catch(e){if(!text){setComposerStatus(`Upload error: ${e.message}`);return;}}
+  // Clear the uploading status now that upload is done — if we don't clear here
+  // it stays visible for the entire duration of the agent stream, since
+  // setComposerStatus('') is only called in setBusy(false), not setBusy(true).
+  setComposerStatus('');
 
   const uploadedNames=uploaded.map(u=>u.name||u);
   const uploadedPaths=uploaded.map(u=>u&&u.is_image?(u.name||u.filename||u):(u.path||u.name||u));
