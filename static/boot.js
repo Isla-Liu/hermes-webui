@@ -463,20 +463,30 @@ $('btnClearPreview').onclick=handleWorkspaceClose;
 $('modelSelect').onchange=async()=>{
   if(!S.session)return;
   const selectedModel=$('modelSelect').value;
+  const modelState=(typeof _modelStateForSelect==='function')
+    ? _modelStateForSelect($('modelSelect'),selectedModel)
+    : {model:selectedModel,model_provider:null};
   if(typeof closeModelDropdown==='function') closeModelDropdown();
-  localStorage.setItem('hermes-webui-model', selectedModel);
-  await api('/api/session/update',{method:'POST',body:JSON.stringify({session_id:S.session.session_id,workspace:S.session.workspace,model:selectedModel})});
-  S.session.model=selectedModel;
+  if(typeof _writePersistedModelState==='function') _writePersistedModelState(modelState.model,modelState.model_provider);
+  else localStorage.setItem('hermes-webui-model', modelState.model);
+  await api('/api/session/update',{method:'POST',body:JSON.stringify({
+    session_id:S.session.session_id,
+    workspace:S.session.workspace,
+    model:modelState.model,
+    model_provider:modelState.model_provider||null,
+  })});
+  S.session.model=modelState.model;
+  S.session.model_provider=modelState.model_provider||null;
   if(typeof syncModelChip==='function') syncModelChip();
   syncTopbar();
+  // Clarify scope: composer model changes are session-local, not the global default.
+  if(typeof showToast==='function'){
+    showToast(t('model_scope_toast')||'Applies to this conversation from your next message.', 3000);
+  }
   // Warn if selected model belongs to a different provider than what Hermes is configured for
   if(typeof _checkProviderMismatch==='function'){
     const warn=_checkProviderMismatch(selectedModel);
     if(warn&&typeof showToast==='function') showToast(warn,4000);
-  }
-  // Clarify scope: composer model changes are session-local, not the global default.
-  if(typeof showToast==='function'){
-    showToast(t('model_scope_toast')||'Applies to this conversation from your next message.', 3000);
   }
 };
 $('msg').addEventListener('input',()=>{
@@ -913,11 +923,20 @@ function applyBotName(){
   // options are enough for first paint; the dynamic provider list can settle
   // after the saved session is visible.
   const _modelDropdownReady=populateModelDropdown().then(()=>{
-    const savedModel=localStorage.getItem('hermes-webui-model');
+    const savedState=(typeof _readPersistedModelState==='function')
+      ? _readPersistedModelState()
+      : (localStorage.getItem('hermes-webui-model')?{model:localStorage.getItem('hermes-webui-model'),model_provider:null}:null);
+    const savedModel=savedState&&savedState.model;
     if(savedModel && $('modelSelect')){
-      $('modelSelect').value=savedModel;
+      const applied=(typeof _applyModelToDropdown==='function')
+        ? _applyModelToDropdown(savedModel,$('modelSelect'),savedState.model_provider||null)
+        : null;
+      if(!applied) $('modelSelect').value=savedModel;
       // If the value didn't take (model not in list), clear the bad pref
-      if($('modelSelect').value!==savedModel) localStorage.removeItem('hermes-webui-model');
+      if(!applied&&$('modelSelect').value!==savedModel){
+        if(typeof _clearPersistedModelState==='function') _clearPersistedModelState();
+        else localStorage.removeItem('hermes-webui-model');
+      }
       else if(typeof syncModelChip==='function') syncModelChip();
     }
     if(S.session) syncTopbar();

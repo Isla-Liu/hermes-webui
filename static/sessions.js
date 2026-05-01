@@ -276,8 +276,22 @@ async function newSession(flash){
   // default_model (from Settings) takes priority over the chat-header dropdown
   // value, which reflects the *previous* session's model. Fall back to the
   // dropdown value only when no default_model is configured.
-  const newModel=window._defaultModel||$('modelSelect').value;
-  const data=await api('/api/session/new',{method:'POST',body:JSON.stringify({model:newModel,workspace:inheritWs,profile:S.activeProfile||'default'})});
+  const modelSel=$('modelSelect');
+  const selectedDefaultModel=window._defaultModel||(modelSel&&modelSel.value)||'';
+  let defaultApplied=false;
+  if(window._defaultModel&&modelSel&&typeof _applyModelToDropdown==='function'){
+    defaultApplied=!!_applyModelToDropdown(window._defaultModel,modelSel,window._activeProvider||null);
+  }
+  const canQualify=!window._defaultModel||defaultApplied||(modelSel&&modelSel.value===selectedDefaultModel);
+  const newModelState=(canQualify&&typeof _modelStateForSelect==='function')
+    ? _modelStateForSelect(modelSel,selectedDefaultModel)
+    : {model:selectedDefaultModel,model_provider:null};
+  const data=await api('/api/session/new',{method:'POST',body:JSON.stringify({
+    model:newModelState.model,
+    model_provider:newModelState.model_provider||null,
+    workspace:inheritWs,
+    profile:S.activeProfile||'default',
+  })});
   S.session=data.session;S.messages=data.session.messages||[];
   S.lastUsage={...(data.session.last_usage||{})};
   if(flash)S.session._flash=true;
@@ -287,7 +301,7 @@ async function newSession(flash){
   // Sync chat-header dropdown to the session's model so the UI reflects
   // the default model the server actually used (#872).
   if(S.session.model && S.session.model!==$('modelSelect').value && typeof _applyModelToDropdown==='function'){
-    _applyModelToDropdown(S.session.model,$('modelSelect'));
+    _applyModelToDropdown(S.session.model,$('modelSelect'),S.session.model_provider||null);
     if(typeof syncModelChip==='function') syncModelChip();
   }
   // Reset per-session visual state: a fresh chat is idle even if another
@@ -515,8 +529,10 @@ function _resolveSessionModelForDisplaySoon(sid){
     try{
       const data=await api(`/api/session?session_id=${encodeURIComponent(sid)}&messages=0&resolve_model=1`);
       const model=data&&data.session&&data.session.model;
+      const provider=data&&data.session&&data.session.model_provider;
       if(!model||!S.session||S.session.session_id!==sid) return;
       S.session.model=model;
+      S.session.model_provider=provider||null;
       S.session._modelResolutionDeferred=false;
       syncTopbar();
     }catch(_){
@@ -897,7 +913,7 @@ function _openSessionActionMenu(session, anchorEl){
     async()=>{
       closeSessionActionMenu();
       try{
-        const res=await api('/api/session/new',{method:'POST',body:JSON.stringify({workspace:session.workspace,model:session.model})});
+        const res=await api('/api/session/new',{method:'POST',body:JSON.stringify({workspace:session.workspace,model:session.model,model_provider:session.model_provider||null})});
         if(res.session){
           await api('/api/session/rename',{method:'POST',body:JSON.stringify({session_id:res.session.session_id,title:(session.title||'Untitled')+' (copy)'})});
           await loadSession(res.session.session_id);

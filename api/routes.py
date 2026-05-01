@@ -215,6 +215,7 @@ from api.config import (
     load_settings,
     save_settings,
     set_hermes_default_model,
+    model_with_provider_context,
     get_reasoning_status,
     set_reasoning_display,
     set_reasoning_effort,
@@ -397,20 +398,78 @@ def _model_matches_active_provider_family(
     return False
 
 
-def _resolve_compatible_session_model(model_id: str | None) -> tuple[str, bool]:
-    """Return (effective_model, was_normalized) for persisted session models.
+def _catalog_model_id_matches(candidate: str, model: str) -> bool:
+    candidate = str(candidate or "").strip()
+    if candidate.startswith("@") and ":" in candidate:
+        candidate = candidate.rsplit(":", 1)[1]
+    if "/" in candidate:
+        candidate = candidate.split("/", 1)[1]
+    return candidate.replace("-", ".").lower() == model.replace("-", ".").lower()
+
+
+def _clean_session_model_provider(value: str | None) -> str | None:
+    provider = str(value or "").strip().lower()
+    if not provider or provider == "default":
+        return None
+    if provider.startswith("@"):
+        provider = provider[1:]
+    return provider or None
+
+
+def _split_provider_qualified_model(model: str) -> tuple[str, str | None]:
+    model = str(model or "").strip()
+    if model.startswith("@") and ":" in model:
+        provider_hint, bare_model = model[1:].rsplit(":", 1)
+        provider = _clean_session_model_provider(provider_hint)
+        bare = bare_model.strip()
+        if provider and bare:
+            return bare, provider
+    return model, None
+
+
+def _should_attach_codex_provider_context(model: str, raw_active_provider: str, catalog: dict) -> bool:
+    """Return True when a bare Codex model needs separate provider context.
+
+    OpenAI, OpenAI Codex, Copilot, and OpenRouter can all expose GPT-looking
+    bare names. If a session stores only ``gpt-...`` while Codex is active, a
+    later provider-list/default-model round trip can lose the user's Codex
+    choice. Store the provider separately instead of converting the persisted
+    model to ``@openai-codex:model``.
+    """
+    if raw_active_provider != "openai-codex":
+        return False
+    if not model.lower().startswith("gpt"):
+        return False
+    for group in catalog.get("groups") or []:
+        if str(group.get("provider_id") or "").strip().lower() != "openai-codex":
+            continue
+        return any(
+            _catalog_model_id_matches(entry.get("id"), model)
+            for entry in group.get("models", [])
+            if isinstance(entry, dict)
+        )
+    return False
+
+
+def _resolve_compatible_session_model_state(
+    model_id: str | None,
+    model_provider: str | None = None,
+) -> tuple[str, str | None, bool]:
+    """Return (effective_model, effective_provider, model_was_normalized).
 
     Sessions can outlive provider changes. When an older session still points at
     a different provider namespace (for example `gemini/...` after switching the
     agent to OpenAI Codex), reusing that stale model causes chat startup to hit
-    the wrong backend and fail. Normalize only obvious cross-provider mismatches;
-    preserve bare model IDs and OpenRouter/custom setups.
+    the wrong backend and fail. Normalize only obvious cross-provider mismatches.
+    When a model has an explicit provider context, keep the model string itself
+    in its picker/API shape and carry the provider as separate state.
     """
     catalog = get_available_models()
     default_model = str(catalog.get("default_model") or DEFAULT_MODEL or "").strip()
     model = str(model_id or "").strip()
+    requested_provider = _clean_session_model_provider(model_provider)
     if not model:
-        return default_model, bool(default_model)
+        return default_model, requested_provider, bool(default_model)
 
     active_provider = _normalize_provider_id(catalog.get("active_provider"))
     # Also keep the raw active_provider slug for cross-provider detection with
@@ -420,15 +479,19 @@ def _resolve_compatible_session_model(model_id: str | None) -> tuple[str, bool]:
     # is stale relative to this unknown active provider. (#1023)
     raw_active_provider = str(catalog.get("active_provider") or "").strip().lower()
     if not active_provider and not raw_active_provider:
-        return model, False
+        bare_model, explicit_provider = _split_provider_qualified_model(model)
+        return model, explicit_provider or requested_provider, False
+
+    bare_for_context, explicit_provider = _split_provider_qualified_model(model)
+    if requested_provider and not explicit_provider:
+        return model, requested_provider, False
 
     if model.startswith("@") and ":" in model:
-        provider_hint, bare_model = model[1:].split(":", 1)
-        provider_raw = provider_hint.strip().lower()
+        provider_raw = explicit_provider or ""
         provider_normalized = _normalize_provider_id(provider_raw)
-        bare_model = bare_model.strip()
+        bare_model = bare_for_context.strip()
         if not provider_raw or not bare_model:
-            return model, False
+            return model, requested_provider, False
 
         raw_provider_ids, normalized_provider_ids = _catalog_provider_id_sets(catalog)
         hint_matches_active = (
@@ -444,7 +507,7 @@ def _resolve_compatible_session_model(model_id: str | None) -> tuple[str, bool]:
             # here would collapse duplicate model IDs from different providers back to the
             # bare ID, causing the first matching provider to win on the next UI render
             # and the wrong provider to be used for the agent run. (#1253)
-            return model, False
+            return model, provider_raw, False
 
         if _catalog_has_provider(
             provider_raw,
@@ -452,13 +515,23 @@ def _resolve_compatible_session_model(model_id: str | None) -> tuple[str, bool]:
             raw_provider_ids,
             normalized_provider_ids,
         ):
-            return model, False
+            return model, provider_raw, False
 
         if _model_matches_active_provider_family(bare_model, active_provider):
-            return bare_model, True
+            provider_context = (
+                raw_active_provider
+                if _should_attach_codex_provider_context(bare_model, raw_active_provider, catalog)
+                else None
+            )
+            return bare_model, provider_context, True
         if default_model:
-            return default_model, True
-        return model, False
+            provider_context = (
+                raw_active_provider
+                if _should_attach_codex_provider_context(default_model, raw_active_provider, catalog)
+                else None
+            )
+            return default_model, provider_context, True
+        return model, provider_raw, False
 
     slash = model.find("/")
     if slash < 0:
@@ -467,9 +540,19 @@ def _resolve_compatible_session_model(model_id: str | None) -> tuple[str, bool]:
             if model_lower.startswith(bare_prefix):
                 model_provider = _normalize_provider_id(bare_prefix)
                 if model_provider and model_provider != active_provider and default_model:
-                    return default_model, True
-                return model, False
-        return model, False
+                    provider_context = (
+                        raw_active_provider
+                        if _should_attach_codex_provider_context(default_model, raw_active_provider, catalog)
+                        else None
+                    )
+                    return default_model, provider_context, True
+                provider_context = (
+                    raw_active_provider
+                    if _should_attach_codex_provider_context(model, raw_active_provider, catalog)
+                    else requested_provider
+                )
+                return model, provider_context, False
+        return model, requested_provider, False
 
     model_provider = _normalize_provider_id(model[:slash])
 
@@ -481,7 +564,7 @@ def _resolve_compatible_session_model(model_id: str | None) -> tuple[str, bool]:
     if active_provider in {"custom", "openrouter"}:
         # These namespaces are always routable as-is — preserve them.
         if model_provider in {"", "custom", "openrouter"}:
-            return model, False
+            return model, requested_provider, False
         # Check if any catalog group can actually route this model's prefix.
         groups = catalog.get("groups") or []
         routable_provider_ids = {
@@ -492,11 +575,11 @@ def _resolve_compatible_session_model(model_id: str | None) -> tuple[str, bool]:
             (g.get("provider_id") or "") == "openrouter" for g in groups
         )
         if model_provider in routable_provider_ids or has_openrouter_group:
-            return model, False
+            return model, requested_provider, False
         # Model prefix is not routable — stale cross-provider reference, clear it.
         if default_model:
-            return default_model, True
-        return model, False
+            return default_model, requested_provider, True
+        return model, requested_provider, False
 
     # Skip normalization for models on custom/openrouter namespaces — these are
     # user-controlled and should never be silently replaced.
@@ -506,18 +589,35 @@ def _resolve_compatible_session_model(model_id: str | None) -> tuple[str, bool]:
     # active provider name, the session model is stale. (#1023)
     _active_for_compare = active_provider or raw_active_provider
     if model_provider and model_provider not in {"", "custom", "openrouter"} and model_provider != _active_for_compare and default_model:
-        return default_model, True
-    return model, False
+        return default_model, requested_provider, True
+    return model, requested_provider, False
+
+
+def _resolve_compatible_session_model(model_id: str | None) -> tuple[str, bool]:
+    """Return (effective_model, model_was_normalized) for legacy callers."""
+    effective_model, _provider, changed = _resolve_compatible_session_model_state(model_id)
+    return effective_model, changed
 
 
 def _normalize_session_model_in_place(session) -> str:
     original_model = getattr(session, "model", None) or ""
-    effective_model, changed = _resolve_compatible_session_model(original_model or None)
+    original_provider = _clean_session_model_provider(
+        getattr(session, "model_provider", None)
+    )
+    effective_model, effective_provider, changed = _resolve_compatible_session_model_state(
+        original_model or None,
+        original_provider,
+    )
+    provider_changed = effective_provider != original_provider
     # Only persist the correction if the session had an explicit model that needed changing.
     # Sessions with no model stored (empty/None) get the effective default returned without
     # a disk write — no need to rebuild the index for a fill-in-blank operation.
-    if changed and effective_model and original_model and original_model != effective_model:
-        session.model = effective_model
+    if original_model and effective_model and (
+        (changed and original_model != effective_model) or provider_changed
+    ):
+        if changed and original_model != effective_model:
+            session.model = effective_model
+        session.model_provider = effective_provider
         session.save(touch_updated_at=False)
     return effective_model
 
@@ -530,8 +630,44 @@ def _resolve_effective_session_model_for_display(session) -> str:
     effective model for the response payload only and leave disk state alone.
     """
     original_model = getattr(session, "model", None) or ""
-    effective_model, _changed = _resolve_compatible_session_model(original_model or None)
+    effective_model, _provider, _changed = _resolve_compatible_session_model_state(
+        original_model or None,
+        getattr(session, "model_provider", None),
+    )
     return effective_model or original_model
+
+
+def _resolve_effective_session_model_provider_for_display(session) -> str | None:
+    original_model = getattr(session, "model", None) or ""
+    _model, provider, _changed = _resolve_compatible_session_model_state(
+        original_model or None,
+        getattr(session, "model_provider", None),
+    )
+    return provider
+
+
+def _session_model_state_from_request(
+    model: str | None,
+    requested_provider: str | None,
+    current_provider: str | None = None,
+) -> tuple[str | None, str | None]:
+    model_value = str(model).strip() if model is not None else None
+    provider = (
+        _clean_session_model_provider(requested_provider)
+        if requested_provider is not None
+        else None
+    )
+    if model_value:
+        _bare, explicit_provider = _split_provider_qualified_model(model_value)
+        if explicit_provider:
+            provider = explicit_provider
+        elif requested_provider is None:
+            provider = _clean_session_model_provider(current_provider)
+        model_value, provider, _changed = _resolve_compatible_session_model_state(
+            model_value,
+            provider,
+        )
+    return model_value, provider
 
 
 from api.models import (
@@ -1033,6 +1169,11 @@ def handle_get(handler, parsed) -> bool:
                 if resolve_model
                 else None
             )
+            effective_provider = (
+                _resolve_effective_session_model_provider_for_display(s)
+                if resolve_model
+                else None
+            )
             _t3 = _time.monotonic()
             _all_msgs = s.messages if load_messages else []
             if load_messages:
@@ -1080,6 +1221,8 @@ def handle_get(handler, parsed) -> bool:
             _t4 = _time.monotonic()
             if effective_model:
                 raw["model"] = effective_model
+            if effective_provider:
+                raw["model_provider"] = effective_provider
             redact = redact_session_data(raw)
             _t5 = _time.monotonic()
             resp = j(handler, {"session": redact})
@@ -1455,9 +1598,18 @@ def handle_post(handler, parsed) -> bool:
             workspace = str(resolve_trusted_workspace(body.get("workspace"))) if body.get("workspace") else None
         except ValueError as e:
             return bad(handler, str(e))
+        model, model_provider = _session_model_state_from_request(
+            body.get("model"),
+            body.get("model_provider"),
+        )
         # Use the profile sent by the client tab (if any) so that two tabs on
         # different profiles never clobber each other via the process-level global.
-        s = new_session(workspace=workspace, model=body.get("model"), profile=body.get("profile") or None)
+        s = new_session(
+            workspace=workspace,
+            model=model,
+            model_provider=model_provider,
+            profile=body.get("profile") or None,
+        )
         return j(handler, {"session": s.compact() | {"messages": s.messages}})
 
     if parsed.path == "/api/default-model":
@@ -1610,7 +1762,15 @@ def handle_post(handler, parsed) -> bool:
             return bad(handler, str(e))
         with _get_session_agent_lock(body["session_id"]):
             s.workspace = new_ws
-            s.model = body.get("model", s.model)
+            if "model" in body or "model_provider" in body:
+                model, provider = _session_model_state_from_request(
+                    body.get("model", s.model),
+                    body.get("model_provider") if "model_provider" in body else None,
+                    getattr(s, "model_provider", None),
+                )
+                if model is not None:
+                    s.model = model
+                s.model_provider = provider
             s.save()
         if str(old_ws or "") != str(new_ws or ""):
             try:
@@ -3473,7 +3633,13 @@ def _handle_btw(handler, body):
         s.active_stream_id = None
     # Create ephemeral hidden session inheriting context
     from api.models import new_session as _new_session
-    ephemeral = _new_session(workspace=s.workspace, model=s.model, profile=getattr(s, 'profile', None))
+    model_provider = getattr(s, 'model_provider', None)
+    ephemeral = _new_session(
+        workspace=s.workspace,
+        model=s.model,
+        model_provider=model_provider,
+        profile=getattr(s, 'profile', None),
+    )
     # Copy conversation history for context (agent reads from messages)
     ephemeral.messages = list(s.messages or [])
     ephemeral.title = f"btw: {question[:60]}"
@@ -3489,7 +3655,7 @@ def _handle_btw(handler, body):
     thr = threading.Thread(
         target=_run_agent_streaming,
         args=(ephemeral.session_id, question, s.model, s.workspace, stream_id, None),
-        kwargs={"ephemeral": True},
+        kwargs={"ephemeral": True, "model_provider": model_provider},
         daemon=True,
     )
     thr.start()
@@ -3515,7 +3681,13 @@ def _handle_background(handler, body):
     if not prompt:
         return bad(handler, "prompt is required")
     from api.models import new_session as _new_session
-    bg = _new_session(workspace=s.workspace, model=s.model, profile=getattr(s, 'profile', None))
+    model_provider = getattr(s, 'model_provider', None)
+    bg = _new_session(
+        workspace=s.workspace,
+        model=s.model,
+        model_provider=model_provider,
+        profile=getattr(s, 'profile', None),
+    )
     bg.title = f"bg: {prompt[:60]}"
     bg.save()
     stream_id = uuid.uuid4().hex
@@ -3537,7 +3709,15 @@ def _handle_background(handler, body):
         `get_results()` would see a forever-`running` task and return nothing.
         """
         try:
-            _run_agent_streaming(bg_sid, prompt, s.model, s.workspace, stream_id, None)
+            _run_agent_streaming(
+                bg_sid,
+                prompt,
+                s.model,
+                s.workspace,
+                stream_id,
+                None,
+                model_provider=model_provider,
+            )
             # Reload the bg session from disk and extract the final assistant reply.
             try:
                 from api.models import Session as _Session
@@ -3591,7 +3771,15 @@ def _handle_chat_start(handler, body):
     except ValueError as e:
         return bad(handler, str(e))
     requested_model = body.get("model") or s.model
-    model, normalized_model = _resolve_compatible_session_model(requested_model)
+    requested_provider = (
+        body.get("model_provider")
+        if "model_provider" in body
+        else getattr(s, "model_provider", None)
+    )
+    model, model_provider, normalized_model = _resolve_compatible_session_model_state(
+        requested_model,
+        requested_provider,
+    )
     # Prevent duplicate runs in the same session while a stream is still active.
     # This commonly happens after page refresh/reconnect races and can produce
     # duplicated clarify cards for what appears to be a single user request.
@@ -3614,6 +3802,7 @@ def _handle_chat_start(handler, body):
     with _get_session_agent_lock(s.session_id):
         s.workspace = workspace
         s.model = model
+        s.model_provider = model_provider
         s.active_stream_id = stream_id
         s.pending_user_message = msg
         s.pending_attachments = attachments
@@ -3626,12 +3815,15 @@ def _handle_chat_start(handler, body):
     thr = threading.Thread(
         target=_run_agent_streaming,
         args=(s.session_id, msg, model, workspace, stream_id, attachments),
+        kwargs={"model_provider": model_provider},
         daemon=True,
     )
     thr.start()
     response = {"stream_id": stream_id, "session_id": s.session_id}
     if normalized_model:
         response["effective_model"] = model
+    if model_provider:
+        response["effective_model_provider"] = model_provider
     return j(handler, response)
 
 
@@ -3677,7 +3869,12 @@ def _handle_chat_sync(handler, body):
         return bad(handler, str(e))
     with _get_session_agent_lock(s.session_id):
         s.workspace = workspace
-        s.model = body.get("model") or s.model
+        model, model_provider = _resolve_compatible_session_model_state(
+            body.get("model") or s.model,
+            body.get("model_provider") if "model_provider" in body else getattr(s, "model_provider", None),
+        )[:2]
+        s.model = model
+        s.model_provider = model_provider
     from api.streaming import _ENV_LOCK
 
     with _ENV_LOCK:
@@ -3693,7 +3890,9 @@ def _handle_chat_sync(handler, body):
         with CHAT_LOCK:
             from api.config import resolve_model_provider
 
-            _model, _provider, _base_url = resolve_model_provider(s.model)
+            _model, _provider, _base_url = resolve_model_provider(
+                model_with_provider_context(s.model, getattr(s, "model_provider", None))
+            )
             # Resolve API key via Hermes runtime provider (matches gateway behaviour)
             _api_key = None
             try:
@@ -4356,7 +4555,9 @@ def _handle_session_compress(handler, body):
         import hermes_cli.runtime_provider as _runtime_provider
         import run_agent as _run_agent
 
-        resolved_model, resolved_provider, resolved_base_url = _cfg.resolve_model_provider(s.model)
+        resolved_model, resolved_provider, resolved_base_url = _cfg.resolve_model_provider(
+            _cfg.model_with_provider_context(s.model, getattr(s, "model_provider", None))
+        )
 
         resolved_api_key = None
         try:
