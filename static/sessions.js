@@ -1733,7 +1733,15 @@ if(typeof window!=='undefined'){
   window.addEventListener('storage', (e) => { void _handleActiveSessionStorageEvent(e); });
   window.addEventListener('popstate', () => {
     const sid=(typeof _sessionIdFromLocation==='function')?_sessionIdFromLocation():null;
-    if(sid && (!S.session || S.session.session_id!==sid)) void loadSession(sid);
+    if(!sid || (S.session && S.session.session_id===sid)) return;
+    // Refuse to switch sessions mid-stream — same UX guard the storage-event
+    // handler had. A user mid-turn who hits browser Back should NOT lose the
+    // active stream. They can hit Back again once the turn ends.
+    if(S.busy){
+      if(typeof showToast==='function') showToast('Finish the current turn before switching sessions.',3000);
+      return;
+    }
+    void loadSession(sid);
   });
 }
 
