@@ -24,7 +24,7 @@ PUBLIC_PATHS = frozenset({
 })
 
 COOKIE_NAME = 'hermes_session'
-SESSION_TTL = 86400  # 24 hours
+SESSION_TTL = 86400 * 30  # 30 days
 
 _SESSIONS_FILE = STATE_DIR / '.sessions.json'
 
@@ -229,7 +229,12 @@ def check_auth(handler, parsed) -> bool:
         handler.wfile.write(b'{"error":"Authentication required"}')
     else:
         handler.send_response(302)
-        handler.send_header('Location', '/login')
+        # Pass the original path as ?next= so login.js redirects back after auth.
+        import urllib.parse as _urlparse
+        _next = _urlparse.quote(parsed.path or '/', safe='/:@!$&\'()*+,;=')
+        if parsed.query:
+            _next += '?' + parsed.query
+        handler.send_header('Location', '/login?next=' + _urlparse.quote(_next, safe='/:@!$&\'()*+,;=?'))
         handler.end_headers()
     return False
 
