@@ -125,156 +125,90 @@ If provider setup is still incomplete after install, the onboarding wizard will 
 
 ## Docker
 
-**Pre-built images** (amd64 + arm64) are published to GHCR on every release:
+**Pre-built images** (amd64 + arm64) are published to GHCR on every release.
 
-Make sure the `HERMES_WEBUI_STATE_DIR` (by default `~/.hermes/webui-mvp`, as detailed in the `.env.example` file) folder exist with the UID/GID of the owner of the `.hermes` folder. 
-The container will also mount your configured "workspace" (also from the example .env.example) as `/workspace`. adapt the location as needed.
+For a comprehensive setup guide covering all 3 compose files, common failure modes, and bind-mount migration, see [`docs/docker.md`](docs/docker.md). The README covers the 5-minute happy path.
 
+### 5-minute quickstart (single container)
+
+The simplest setup: one WebUI container that runs the agent in-process.
+
+```bash
+git clone https://github.com/nesquena/hermes-webui
+cd hermes-webui
+cp .env.docker.example .env
+# Edit .env if your host UID isn't 1000 (e.g. macOS where UIDs start at 501)
+docker compose up -d
+# Open http://localhost:8787
+```
+
+The container auto-detects your UID/GID from the mounted `~/.hermes` volume so files written by the agent stay readable by you on the host.
+
+To enable password protection (required if you expose the port outside `127.0.0.1`):
+
+```bash
+echo "HERMES_WEBUI_PASSWORD=change-me-to-something-strong" >> .env
+docker compose up -d --force-recreate
+```
+
+### Manual `docker run` (no compose)
 
 ```bash
 docker pull ghcr.io/nesquena/hermes-webui:latest
 docker run -d \
--e WANTED_UID=`id -u` -e WANTED_GID=`id -g` \
--v ~/.hermes:/home/hermeswebui/.hermes -e HERMES_WEBUI_STATE_DIR=/home/hermeswebui/.hermes/webui-mvp \
--v ~/workspace:/workspace \
--p 8787:8787 ghcr.io/nesquena/hermes-webui:latest
+  -e WANTED_UID=$(id -u) -e WANTED_GID=$(id -g) \
+  -v ~/.hermes:/home/hermeswebui/.hermes \
+  -e HERMES_WEBUI_STATE_DIR=/home/hermeswebui/.hermes/webui \
+  -v ~/workspace:/workspace \
+  -p 127.0.0.1:8787:8787 \
+  ghcr.io/nesquena/hermes-webui:latest
 ```
 
-Or run with Docker Compose (recommended):
-
-```bash
-# Check the docker-compose.yml and make sure to adapt as needed, at minimum WANTED_UID/WANTED_GID
-docker compose up -d
-```
-
-Or build locally:
+### Build locally
 
 ```bash
 docker build -t hermes-webui .
 docker run -d \
--e WANTED_UID=`id -u` -e WANTED_GID=`id -g` \
--v ~/.hermes:/home/hermeswebui/.hermes -e HERMES_WEBUI_STATE_DIR=/home/hermeswebui/.hermes/webui-mvp \
--v ~/workspace:/workspace \
--p 8787:8787 hermes-webui
+  -e WANTED_UID=$(id -u) -e WANTED_GID=$(id -g) \
+  -v ~/.hermes:/home/hermeswebui/.hermes \
+  -e HERMES_WEBUI_STATE_DIR=/home/hermeswebui/.hermes/webui \
+  -v ~/workspace:/workspace \
+  -p 127.0.0.1:8787:8787 \
+  hermes-webui
 ```
 
-Open http://localhost:8787 in your browser.
+### Multi-container setups
 
-To enable password protection:
+If you want the agent and WebUI in separate containers (for isolation, or because you're already running an agent gateway elsewhere):
 
 ```bash
-docker run -d \
--e WANTED_UID=`id -u` -e WANTED_GID=`id -g` \
--v ~/.hermes:/home/hermeswebui/.hermes -e HERMES_WEBUI_STATE_DIR=/home/hermeswebui/.hermes/webui-mvp \
--v ~/workspace:/workspace \
--p 8787:8787 -e HERMES_WEBUI_PASSWORD=your-secret ghcr.io/nesquena/hermes-webui:latest
+# Agent + WebUI
+docker compose -f docker-compose.two-container.yml up -d
+
+# Agent + Dashboard + WebUI
+docker compose -f docker-compose.three-container.yml up -d
 ```
+
+Both compose files use **named Docker volumes** by default, which solves the UID/GID problem by construction. If you need bind mounts to share an existing host directory, see [`docs/docker.md`](docs/docker.md) for the full migration recipe.
+
+> **Known limitation (#681)**: in the two-container setup, tools triggered from the WebUI run in the **WebUI container**, not the agent container. If you need git/node/etc. on the WebUI's filesystem, either use the single-container setup, extend the WebUI Dockerfile, or use the community [all-in-one image](https://github.com/sunnysktsang/hermes-suite).
+
+### Common failure modes
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `PermissionError` at startup | UID mismatch on bind mount | Set `UID=$(id -u)` in `.env` |
+| `.env: permission denied` (#1389) | `fix_credential_permissions()` enforced 0600 | Set `HERMES_SKIP_CHMOD=1` in `.env` |
+| Workspace appears empty | UID mismatch on `/workspace` mount | Set `UID=$(id -u)` in `.env` |
+| `git: command not found` in chat | Two-container architectural limit (#681) | Use single-container or extend Dockerfile |
+| WebUI can't find agent source | `hermes-agent-src` volume misconfigured | Use the named volumes from compose files as-is |
+| Podman shared `.hermes` fails | Podman 3.4 `keep-id` limitation | Use Podman 4+ or single-container |
+
+For the deep dive on each of these, see [`docs/docker.md`](docs/docker.md).
 
 > **Note:** By default, Docker Compose binds to `127.0.0.1` (localhost only).
 > To expose on a network, change the port to `"8787:8787"` in `docker-compose.yml`
 > and set `HERMES_WEBUI_PASSWORD` to enable authentication.
-
-### Two-container setup (Agent + WebUI)
-
-If you run the Hermes Agent in its own Docker container and want the WebUI
-in a separate container:
-
-```bash
-docker compose -f docker-compose.two-container.yml up -d
-```
-
-This starts both containers with shared volumes:
-
-- **`hermes-home`** — shared `~/.hermes` for config, sessions, skills, memory
-- **`hermes-agent-src`** — the agent's source code, mounted into the WebUI
-  container so it can install the agent's Python dependencies at startup
-
-> **Volume type:** The compose files use named Docker volumes by default.
-> If you prefer bind mounts to an existing directory (e.g. for sharing state
-> with an agent container you already run), both containers must mount the
-> same host path — the agent writes to `/root/.hermes`, the WebUI reads from
-> `/home/hermeswebui/.hermes`. See `docker-compose.two-container.yml` for
-> a bind-mount example.
-
-The WebUI's init script automatically installs hermes-agent and all its
-dependencies (openai, anthropic, etc.) into its own Python environment on
-first boot. Subsequent restarts reuse the installed packages.
-
-> **How it works:** The WebUI imports hermes-agent's Python modules directly
-> (not via HTTP). The shared volume makes the agent source available, and
-> the init script runs `uv pip install` to set up the dependencies. Both
-> containers share the same `~/.hermes` directory for config and state.
-
-See `docker-compose.two-container.yml` for the full configuration.
-
-### Running alongside hermes-dashboard (three-container setup)
-
-To run the Hermes Agent, Hermes Dashboard, and the WebUI together on a
-shared volume, use the three-container Compose file:
-
-```bash
-docker compose -f docker-compose.three-container.yml up -d
-```
-
-This brings up:
-- **`hermes-agent`** — gateway API on port 8642
-- **`hermes-dashboard`** — monitoring UI on port 9119
-- **`hermes-webui`** — browser chat interface on port 8787
-
-All three services share the same `hermes-home` named volume so config,
-sessions, skills, and memory are consistent across all surfaces.
-
-#### Why UIDs must match
-
-The `hermes-home` volume is a bind-mount in practice — all three containers
-write to the same filesystem tree under `~/.hermes`. If the containers run
-as different UIDs, whichever container creates a file first becomes its
-owner, and the others hit `PermissionError` on subsequent writes.
-
-The fix is to make all containers run as **your host user's UID and GID**.
-
-#### Variable name asymmetry
-
-> ⚠️ **The two image families use different environment variable names** for
-> the UID/GID setting:
->
-> | Image | Variable |
-> |---|---|
-> | `nousresearch/hermes-agent` (agent + dashboard) | `HERMES_UID` / `HERMES_GID` |
-> | `ghcr.io/nesquena/hermes-webui` | `WANTED_UID` / `WANTED_GID` |
->
-> You must set **both pairs** when using a `.env` file.
-
-#### Recommended setup
-
-For a standard Linux user (UID ≥ 1000):
-
-```bash
-# Create a .env file with your host UID/GID
-echo "UID=$(id -u)" >> .env
-echo "GID=$(id -g)" >> .env
-# hermes-agent / hermes-dashboard
-echo "HERMES_UID=$(id -u)" >> .env
-echo "HERMES_GID=$(id -g)" >> .env
-```
-
-For NAS/Unraid deployments where a fixed service account is preferred, use
-`10000:10000` (or your NAS service UID) instead of `$(id -u)`.
-
-If you get `PermissionError` on an **existing** `~/.hermes` directory, run
-the one-time ownership fix:
-
-```bash
-chown -R $(id -u):$(id -g) ~/.hermes
-```
-
-#### Volume mount mode
-
-The dashboard container needs **read-write** access to the shared volume
-(it writes session logs and dashboard state). Do **not** add `:ro` to the
-`hermes-home` volume in `hermes-dashboard`'s `volumes:` entry.
-
-See `docker-compose.three-container.yml` for the full reference configuration.
 
 ---
 

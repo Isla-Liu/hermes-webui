@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [v0.50.260] — 2026-05-01
+
+### Fixed
+- **Docker compose UID/GID alignment** (#1428, fixes #1399) — the two- and three-container compose files had a UID mismatch between containers sharing the `hermes-home` volume: `hermes-agent` and `hermes-dashboard` ran as UID 10000 (image default) while `hermes-webui` ran as UID 1000 (`WANTED_UID` default), causing `Permission denied` errors on every shared file. All services now read from `${UID:-1000}` and `${GID:-1000}` so they align by construction. Empirically tested on both two- and three-container setups by the contributor. (`docker-compose.two-container.yml`, `docker-compose.three-container.yml`) @sunnysktsang — PR #1428
+
+### Changed
+- **Docker UX overhaul** — Docker reliability has been a recurring pain point. This release ships a coordinated set of doc/config improvements:
+  - **All 3 compose files** now document the `HERMES_SKIP_CHMOD` and `HERMES_HOME_MODE` escape hatches inline (the v0.50.254 fix for #1389 wasn't surfaced for Docker users).
+  - **New `.env.docker.example`** template specifically for Docker users, covering UID/GID, paths, password, and permission-handling escape hatches with explicit `UID=1000`/`GID=1000` placeholders so macOS users don't skim past the warning.
+  - **New `docs/docker.md`** — comprehensive guide covering all 3 compose files, common failure modes (with one-line fixes), bind-mount migration recipe, multi-container architecture diagram, macOS Docker Desktop file-sharing implementation note, and pointer to the [community all-in-one image](https://github.com/sunnysktsang/hermes-suite) for Podman 3.4 / multi-arch users.
+  - **README Docker section rewritten** — clearer 5-minute quickstart pointing at the single-container setup; failure-mode table with one-line fixes; pointer to `docs/docker.md` for the deep dive; **stale `/root/.hermes` reference removed** (the agent images use `/home/hermes/.hermes`).
+  - **12 regression tests** in `tests/test_v050260_docker_invariants.py` — UID/GID alignment positive + negative-pattern guards, escape-hatch documentation, `.env.docker.example` shape, `docs/docker.md` failure-mode coverage, README link integrity, and YAML validity for all 3 compose files. (`docker-compose.yml`, `docker-compose.two-container.yml`, `docker-compose.three-container.yml`, `.env.docker.example`, `docs/docker.md`, `README.md`, `tests/test_v050260_docker_invariants.py`)
+
+### Changed (Opus pre-release advisor)
+- **`HERMES_HOME_MODE` semantic asymmetry warning** — Opus advisor caught a footgun in my initial draft: `HERMES_HOME_MODE` means **different things** in the WebUI vs. the agent image. WebUI's `HERMES_HOME_MODE` is a credential-FILE mode threshold (e.g. `0640` allows group bits on `.env`), but the agent's `HERMES_HOME_MODE` is the HERMES_HOME *directory* mode (default `0700`). `0640` on a directory has no owner-execute bit, so the agent can't traverse its own home directory and bricks. My initial draft recommended `HERMES_HOME_MODE=0640` as the example value in agent service blocks — corrected to `0750` (group-traversable) for multi-container setups. All three surfaces now match: compose files (per-service comments), `.env.docker.example` (multi-container warning section), `docs/docker.md` (failure mode #2 callout). 3 new regression tests pin the asymmetry: `test_agent_service_does_not_recommend_invalid_home_mode`, `test_compose_files_warn_about_home_mode_asymmetry`, `test_env_docker_example_warns_about_home_mode_asymmetry`. (`docker-compose.two-container.yml`, `docker-compose.three-container.yml`, `.env.docker.example`, `docs/docker.md`, `tests/test_v050260_docker_invariants.py`)
+
+
 ## [v0.50.259] — 2026-05-01
 
 ### Fixed
