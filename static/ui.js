@@ -287,7 +287,7 @@ async function populateModelDropdown(){
   const sel=$('modelSelect');
   if(!sel) return;
   try{
-    const _modelsRes=await fetch(new URL('api/models',location.href).href,{credentials:'include'});
+    const _modelsRes=await fetch(new URL('api/models',document.baseURI||location.href).href,{credentials:'include'});
     if(_redirectIfUnauth(_modelsRes)) return;
     const data=await _modelsRes.json();
     if(!data.groups||!data.groups.length) return; // keep HTML defaults
@@ -405,7 +405,7 @@ async function _fetchLiveModels(provider, sel){
   }
   _liveModelFetchPending.add(provider);
   try{
-    const url=new URL('api/models/live',location.href);
+    const url=new URL('api/models/live',document.baseURI||location.href);
     url.searchParams.set('provider',provider);
     const _liveRes=await fetch(url.href,{credentials:'include'});
     if(_redirectIfUnauth(_liveRes)) return;
@@ -2757,7 +2757,7 @@ function syncTopbar(){
           if(!deferModelCorrection){
             S.session.model=first.value;
             // Persist the correction so the session doesn't re-inject on next load.
-            fetch(new URL('api/session/update',location.href).href,{
+            fetch(new URL('api/session/update',document.baseURI||location.href).href,{
               method:'POST',credentials:'include',
               headers:{'Content-Type':'application/json'},
               body:JSON.stringify({session_id:S.session.id||S.session.session_id,model:first.value})
@@ -5012,7 +5012,7 @@ async function uploadPendingFiles(){
     fd.append('session_id',S.session.session_id);fd.append('file',f,f.name);
     try{
       const isArchive=_ARCHIVE_EXTS.test(f.name);
-      const url=new URL(isArchive?'api/upload/extract':'api/upload',location.href).href;
+      const url=new URL(isArchive?'api/upload/extract':'api/upload',document.baseURI||location.href).href;
       const res=await fetch(url,{method:'POST',credentials:'include',body:fd});
       if(_redirectIfUnauth(res)) return;
       if(!res.ok){const err=await res.text();throw new Error(err);}

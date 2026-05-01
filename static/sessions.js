@@ -282,6 +282,7 @@ async function newSession(flash){
   S.lastUsage={...(data.session.last_usage||{})};
   if(flash)S.session._flash=true;
   localStorage.setItem('hermes-webui-session',S.session.session_id);
+  _setActiveSessionUrl(S.session.session_id);
   _setSessionViewedCount(S.session.session_id, S.session.message_count || 0);
   // Sync chat-header dropdown to the session's model so the UI reflects
   // the default model the server actually used (#872).
@@ -362,6 +363,7 @@ async function loadSession(sid){
   _setSessionViewedCount(S.session.session_id, Number(data.session.message_count || 0));
   _clearSessionCompletionUnread(S.session.session_id);
   localStorage.setItem('hermes-webui-session',S.session.session_id);
+  _setActiveSessionUrl(S.session.session_id);
 
   const activeStreamId=S.session.active_stream_id||null;
 
@@ -647,6 +649,41 @@ let _showAllProfiles = false;  // false = filter to active profile only
 let _sessionActionMenu = null;
 let _sessionActionAnchor = null;
 let _sessionActionSessionId = null;
+
+function _sessionIdFromLocation(){
+  if(typeof window==='undefined'||!window.location) return null;
+  const marker='/session/';
+  const path=window.location.pathname||'';
+  const idx=path.indexOf(marker);
+  if(idx>=0){
+    const raw=path.slice(idx+marker.length).split('/')[0];
+    if(raw){try{return decodeURIComponent(raw);}catch(_e){return raw;}}
+  }
+  try{
+    const qs=new URLSearchParams(window.location.search||'');
+    return qs.get('session')||null;
+  }catch(_e){return null;}
+}
+function _sessionUrlForSid(sid){
+  const encoded=encodeURIComponent(sid);
+  let base;
+  try{base=new URL(`session/${encoded}`, document.baseURI||window.location.origin+'/');}
+  catch(_e){base=new URL(`/session/${encoded}`, window.location.origin);}
+  try{
+    const current=new URL(window.location.href);
+    current.searchParams.delete('session');
+    base.search=current.searchParams.toString();
+    base.hash=current.hash;
+  }catch(_e){}
+  return base.pathname+base.search+base.hash;
+}
+function _setActiveSessionUrl(sid){
+  if(typeof window==='undefined'||!window.history||!sid) return;
+  const next=_sessionUrlForSid(sid);
+  if(next && next!==(window.location.pathname+window.location.search+window.location.hash)){
+    window.history.replaceState({session_id:sid},'',next);
+  }
+}
 
 // ── Batch select mode ──
 function toggleSessionSelectMode(){
@@ -1216,6 +1253,13 @@ function _sessionLineageKey(s){
   return s._lineage_root_id || s.lineage_root_id || s.parent_session_id || null;
 }
 
+function _sessionLineageContainsSession(s, sid){
+  if(!s||!sid) return false;
+  if(s.session_id===sid) return true;
+  if(!Array.isArray(s._lineage_segments)) return false;
+  return s._lineage_segments.some(seg=>seg&&seg.session_id===sid);
+}
+
 function _collapseSessionLineageForSidebar(sessions){
   const result=[];
   const groups=new Map();
@@ -1227,10 +1271,17 @@ function _collapseSessionLineageForSidebar(sessions){
   }
   for(const items of groups.values()){
     if(items.length<=1){result.push(items[0]);continue;}
-    const chosen=[...items].sort((a,b)=>_sessionTimestampMs(b)-_sessionTimestampMs(a))[0];
-    result.push({...chosen,_lineage_collapsed_count:items.length});
+    const sorted=[...items].sort((a,b)=>_sessionTimestampMs(b)-_sessionTimestampMs(a));
+    const chosen=sorted[0];
+    result.push({...chosen,_lineage_collapsed_count:items.length,_lineage_segments:sorted});
   }
   return result;
+}
+
+function _activeSessionIdForSidebar(){
+  if(S.session&&S.session.session_id) return S.session.session_id;
+  if(typeof _sessionIdFromLocation==='function') return _sessionIdFromLocation();
+  return null;
 }
 
 function renderSessionListFromCache(){
@@ -1238,6 +1289,7 @@ function renderSessionListFromCache(){
   if(_renamingSid) return;
   closeSessionActionMenu();
   const q=($('sessionSearch').value||'').toLowerCase();
+  const activeSidForSidebar=_activeSessionIdForSidebar();
   const titleMatches=q?_allSessions.filter(s=>(s.title||'Untitled').toLowerCase().includes(q)):_allSessions;
   // Merge content matches (deduped): content matches appended after title matches
   const titleIds=new Set(titleMatches.map(s=>s.session_id));
@@ -1246,7 +1298,7 @@ function renderSessionListFromCache(){
   // real once the first message is sent. The server already filters them, but this
   // guard ensures a brand-new active session doesn't flash into the list while
   // _allSessions is stale from a prior render (#1171).
-  const withMessages=allMatched.filter(s=>(s.message_count||0)>0 || (S.session&&s.session_id===S.session.session_id&&(S.session.message_count||0)>0));
+  const withMessages=allMatched.filter(s=>(s.message_count||0)>0 || (activeSidForSidebar&&s.session_id===activeSidForSidebar) || (S.session&&s.session_id===S.session.session_id&&(S.session.message_count||0)>0));
   // Filter by active profile (unless "All profiles" is toggled on)
   // Server backfills profile='default' for legacy sessions, so every session has a profile.
   // Show only sessions tagged to the active profile; 'All profiles' toggle overrides.
@@ -1407,7 +1459,7 @@ function renderSessionListFromCache(){
   // Note: declared after the groups loop but available via function hoisting.
   function _renderOneSession(s, isPinnedGroup=false){
     const el=document.createElement('div');
-    const isActive=S.session&&s.session_id===S.session.session_id;
+    const isActive=_sessionLineageContainsSession(s,activeSidForSidebar);
     const isStreaming=_isSessionEffectivelyStreaming(s);
     _rememberRenderedStreamingState(s, isStreaming);
     _rememberRenderedSessionSnapshot(s);
@@ -1671,18 +1723,18 @@ function renderSessionListFromCache(){
 
 async function _handleActiveSessionStorageEvent(e){
   if(!e || e.key !== 'hermes-webui-session') return;
-  const sid = e.newValue;
-  if(!sid || (S.session && S.session.session_id === sid)) return;
-  if(S.busy){
-    if(typeof showToast==='function') showToast('Active session changed in another tab. Finish the current turn before switching.',3000);
-    return;
-  }
-  await loadSession(sid);
-  renderSessionListFromCache();
+  // Do not treat localStorage as a global active-session bus. Each tab owns its
+  // active conversation via its URL (/session/<id>), so another tab switching
+  // sessions must not force this tab to navigate away from an in-flight turn.
+  if(typeof renderSessionListFromCache==='function') renderSessionListFromCache();
 }
 
 if(typeof window!=='undefined'){
   window.addEventListener('storage', (e) => { void _handleActiveSessionStorageEvent(e); });
+  window.addEventListener('popstate', () => {
+    const sid=(typeof _sessionIdFromLocation==='function')?_sessionIdFromLocation():null;
+    if(sid && (!S.session || S.session.session_id!==sid)) void loadSession(sid);
+  });
 }
 
 async function deleteSession(sid){
