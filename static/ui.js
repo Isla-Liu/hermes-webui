@@ -520,7 +520,8 @@ function _selectedModelOption(){
 
 function _normalizeConfiguredModelKey(modelId){
   let s=String(modelId||'').trim().toLowerCase();
-  if(s.startsWith('@')&&s.includes(':')) s=s.substring(s.indexOf(':')+1);
+  // Strip @provider: prefix (e.g., @custom:jingdong:GLM-5 -> GLM-5)
+  if(s.startsWith('@')&&s.includes(':')) s=s.split(':').pop();
   if(s.includes('/')) s=s.split('/').pop();
   return s.replace(/-/g,'.');
 }
@@ -678,7 +679,13 @@ function renderModelDropdown(){
       for(const m of configuredModels){
         const row=document.createElement('div');
         row.className='model-opt'+(m.value===sel.value?' active':'');
-        const badgeHtml=m.badge?`<span class="model-opt-badge model-opt-badge--${esc(m.badge.role||'configured')}">${esc(m.badge.label||'Configured')}</span>`:'';
+        // Add provider info to badge label (e.g., "Primary (jingdong)")
+        let badgeLabel=m.badge?(m.badge.label||'Configured'):'';
+        if(m.badge&&m.badge.provider){
+          const providerName=m.badge.provider.replace(/^custom:/,'').split('/')[0];
+          badgeLabel+=` (${providerName})`;
+        }
+        const badgeHtml=m.badge?`<span class="model-opt-badge model-opt-badge--${esc(m.badge.role||'configured')}">${esc(badgeLabel)}</span>`:'';
         row.innerHTML=`<div class="model-opt-top"><span class="model-opt-name">${m.name}</span>${badgeHtml}</div><span class="model-opt-id">${m.id}</span>`;
         row.onclick=()=>selectModelFromDropdown(m.value);
         dd.appendChild(row);
