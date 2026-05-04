@@ -629,33 +629,46 @@ def _task_action_payload(task_id: str, body: dict, action: str):
 
 def handle_kanban_get(handler, parsed) -> bool:
     path = parsed.path
-    if path == "/api/kanban/board":
-        return j(handler, _board_payload(parsed)) or True
-    if path == "/api/kanban/config":
-        return j(handler, _config_payload()) or True
-    if path == "/api/kanban/stats":
-        return j(handler, _stats_payload()) or True
-    if path == "/api/kanban/assignees":
-        return j(handler, _assignees_payload()) or True
-    if path == "/api/kanban/events":
-        return j(handler, _events_payload(parsed)) or True
-    if path.startswith(_TASK_PREFIX) and path.endswith("/log"):
-        task_id = unquote(path[len(_TASK_PREFIX):-len("/log")]).strip("/")
-        if not task_id or "/" in task_id:
-            return False
-        payload = _task_log_payload(parsed, task_id)
-        if payload is None:
-            return bad(handler, "task not found", status=404)
-        return j(handler, payload) or True
-    if path.startswith(_TASK_PREFIX):
-        task_id = unquote(path[len(_TASK_PREFIX):]).strip("/")
-        if not task_id or "/" in task_id:
-            return False
-        payload = _task_detail_payload(task_id)
-        if payload is None:
-            return bad(handler, "task not found", status=404)
-        return j(handler, payload) or True
-    return False
+    try:
+        if path == "/api/kanban/board":
+            return j(handler, _board_payload(parsed)) or True
+        if path == "/api/kanban/config":
+            return j(handler, _config_payload()) or True
+        if path == "/api/kanban/stats":
+            return j(handler, _stats_payload()) or True
+        if path == "/api/kanban/assignees":
+            return j(handler, _assignees_payload()) or True
+        if path == "/api/kanban/events":
+            return j(handler, _events_payload(parsed)) or True
+        if path.startswith(_TASK_PREFIX) and path.endswith("/log"):
+            task_id = unquote(path[len(_TASK_PREFIX):-len("/log")]).strip("/")
+            if not task_id or "/" in task_id:
+                return False
+            payload = _task_log_payload(parsed, task_id)
+            if payload is None:
+                return bad(handler, "task not found", status=404)
+            return j(handler, payload) or True
+        if path.startswith(_TASK_PREFIX):
+            task_id = unquote(path[len(_TASK_PREFIX):]).strip("/")
+            if not task_id or "/" in task_id:
+                return False
+            payload = _task_detail_payload(task_id)
+            if payload is None:
+                return bad(handler, "task not found", status=404)
+            return j(handler, payload) or True
+        return False
+    except ImportError as exc:
+        # hermes_cli not installed (webui-only deploy). Return a clean 503
+        # "kanban unavailable" rather than a 500 so the frontend's existing
+        # try/catch surfaces a useful toast.
+        return bad(handler, f"kanban unavailable: {exc}", status=503)
+    except LookupError as exc:
+        return bad(handler, str(exc), status=404)
+    except ValueError as exc:
+        return bad(handler, str(exc))
+    except RuntimeError as exc:
+        return bad(handler, str(exc), status=409)
+
 
 def handle_kanban_post(handler, parsed, body) -> bool:
     path = parsed.path
@@ -680,6 +693,8 @@ def handle_kanban_post(handler, parsed, body) -> bool:
         if path.startswith(_TASK_PREFIX) and path.endswith("/patch"):
             task_id = path[len(_TASK_PREFIX):-len("/patch")].strip("/")
             return j(handler, _patch_task_payload(task_id, body)) or True
+    except ImportError as exc:
+        return bad(handler, f"kanban unavailable: {exc}", status=503)
     except LookupError as exc:
         return bad(handler, str(exc), status=404)
     except ValueError as exc:
@@ -697,6 +712,8 @@ def handle_kanban_patch(handler, parsed, body) -> bool:
             if not task_id or "/" in task_id:
                 return False
             return j(handler, _patch_task_payload(task_id, body)) or True
+    except ImportError as exc:
+        return bad(handler, f"kanban unavailable: {exc}", status=503)
     except LookupError as exc:
         return bad(handler, str(exc), status=404)
     except ValueError as exc:
@@ -711,6 +728,8 @@ def handle_kanban_delete(handler, parsed, body) -> bool:
     try:
         if path == "/api/kanban/links":
             return j(handler, _link_tasks_payload(body, unlink=True)) or True
+    except ImportError as exc:
+        return bad(handler, f"kanban unavailable: {exc}", status=503)
     except LookupError as exc:
         return bad(handler, str(exc), status=404)
     except ValueError as exc:

@@ -281,3 +281,36 @@ console.log(JSON.stringify({html}));
     assert "1777931496" not in html
     assert "waiting" in html
     assert "ReferenceError" not in html
+
+
+def test_kanban_readonly_banner_starts_hidden_and_is_toggled_on_load():
+    """The 'Read-only view' banner must start hidden in the HTML and only
+    become visible when the bridge reports read_only=true. Always-visible
+    label is misleading when the kanban_db is fully writable.
+    """
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    index_path = os.path.join(here, "..", "static", "index.html")
+    with open(index_path, "r", encoding="utf-8") as f:
+        html = f.read()
+    # Banner must be in HTML but default-hidden
+    assert 'class="kanban-readonly"' in html
+    assert 'data-i18n="kanban_read_only"' in html
+    # The banner element must have inline style="display:none" (default-hidden)
+    # A naive substring check is sufficient — there is exactly one such element.
+    banner_block = html[html.find('class="kanban-readonly"'):html.find('class="kanban-readonly"') + 200]
+    assert 'display:none' in banner_block, (
+        "Read-only banner must default to display:none in HTML to avoid "
+        "flashing the wrong message before loadKanban() resolves the actual "
+        "read_only flag from the API."
+    )
+    # And panels.js must toggle it based on _kanbanBoard.read_only
+    panels_path = os.path.join(here, "..", "static", "panels.js")
+    with open(panels_path, "r", encoding="utf-8") as f:
+        panels = f.read()
+    assert ".kanban-readonly" in panels, (
+        "panels.js must reference .kanban-readonly to toggle the banner"
+    )
+    assert "_kanbanBoard.read_only" in panels, (
+        "panels.js must consult _kanbanBoard.read_only when toggling the banner"
+    )

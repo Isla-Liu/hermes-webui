@@ -1105,6 +1105,13 @@ async function loadKanban(animate){
       _kanbanBoard.columns = config.columns.map(name => ({name, tasks: []}));
     }
     _kanbanLatestEventId = Number(_kanbanBoard.latest_event_id || 0);
+    // Toggle the "Read-only view" banner based on the bridge's read_only flag.
+    // Bridge sets read_only=true only when the kanban_db connection cannot accept
+    // writes (e.g. dispatcher contention or library missing). Hide otherwise.
+    try {
+      const ro = document.querySelector('.kanban-readonly');
+      if (ro) ro.style.display = _kanbanBoard.read_only ? '' : 'none';
+    } catch(_) {}
     _kanbanSetSelectOptions($('kanbanAssigneeFilter'), _kanbanBoard.assignees || (assignees && assignees.assignees) || (config && config.assignees), 'kanban_all_assignees');
     _kanbanSetSelectOptions($('kanbanTenantFilter'), _kanbanBoard.tenants, 'kanban_all_tenants');
     await loadKanbanStats();

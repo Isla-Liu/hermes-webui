@@ -3151,6 +3151,46 @@ main.main.showing-insights > #mainInsights{display:flex;overflow-y:auto;}
 .kanban-task-preview-body{font-size:12px;color:var(--muted);line-height:1.45;white-space:pre-wrap;margin-bottom:6px;}
 .kanban-status-actions{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 4px;}
 .kanban-status-actions .btn{font-size:11px;padding:4px 8px;}
+/* Generic styled buttons used throughout the Kanban panel. The Kanban PR
+   stack standardised on `.btn` / `.btn.secondary` class names but never
+   shipped the matching CSS, so without these rules buttons fall back to
+   the browser's default beveled appearance which clashes with the dark
+   theme. Scoped to kanban-* parent containers so the rules cannot affect
+   any other panel that happens to use those class names later. */
+.kanban-pane .btn,
+.kanban-bulk-bar .btn,
+.kanban-new-task-row .btn,
+.kanban-task-preview .btn,
+.kanban-comment-form .btn{
+  border:1px solid var(--border);
+  background:var(--input-bg);
+  color:var(--text);
+  border-radius:6px;
+  padding:6px 12px;
+  font:inherit;
+  font-size:12px;
+  cursor:pointer;
+  transition:border-color .15s,background .15s,color .15s;
+}
+.kanban-pane .btn:hover,
+.kanban-bulk-bar .btn:hover,
+.kanban-new-task-row .btn:hover,
+.kanban-task-preview .btn:hover,
+.kanban-comment-form .btn:hover{border-color:var(--accent);color:var(--accent);}
+.kanban-pane .btn:disabled,
+.kanban-bulk-bar .btn:disabled,
+.kanban-new-task-row .btn:disabled,
+.kanban-task-preview .btn:disabled,
+.kanban-comment-form .btn:disabled{opacity:.5;cursor:default;}
+.kanban-pane .btn.secondary,
+.kanban-bulk-bar .btn.secondary,
+.kanban-new-task-row .btn.secondary,
+.kanban-task-preview .btn.secondary,
+.kanban-comment-form .btn.secondary{background:transparent;}
+.kanban-pane .btn.danger,
+.kanban-task-preview .btn.danger{color:var(--danger);border-color:rgba(255,95,95,.4);}
+.kanban-pane .btn.danger:hover,
+.kanban-task-preview .btn.danger:hover{background:rgba(255,95,95,.1);color:var(--danger);}
 .kanban-comment-form{display:flex;gap:8px;align-items:flex-end;margin-top:12px;}
 .kanban-comment-form textarea{flex:1;min-height:42px;resize:vertical;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px;font:inherit;font-size:12px;}
 

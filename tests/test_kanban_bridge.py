@@ -483,3 +483,89 @@ def test_patch_status_blocked_to_ready_routes_through_unblock_task(monkeypatch):
     assert kb.unblock_calls == ["t_2"], (
         f"blocked → ready transition must call kb.unblock_task; saw: {kb.unblock_calls}"
     )
+
+
+def test_handle_kanban_get_returns_503_when_hermes_cli_missing(monkeypatch):
+    """If hermes_cli is unavailable (webui-only deploy), the bridge must
+    return a clean 503 with a `kanban unavailable` body — NOT a 500/exception
+    that bubbles up to the user. The frontend's existing try/catch surfaces
+    the toast cleanly only when the bridge gives a structured error.
+    """
+    bridge = _load_bridge(monkeypatch)
+    # Force _kb() to raise ImportError as if hermes_cli was uninstalled
+    monkeypatch.setattr(
+        bridge, "_kb",
+        lambda: (_ for _ in ()).throw(ImportError("No module named 'hermes_cli'")),
+    )
+
+    captured = {}
+
+    class FakeHandler:
+        def __init__(self):
+            self.headers = {}
+            self.body = None
+            self.status = None
+
+    h = FakeHandler()
+
+    def fake_bad(handler, msg, status=400):
+        captured["msg"] = msg
+        captured["status"] = status
+        return True
+
+    monkeypatch.setattr(bridge, "bad", fake_bad)
+    parsed = _parsed(path="/api/kanban/board")
+    result = bridge.handle_kanban_get(h, parsed)
+    assert result is True
+    assert captured["status"] == 503
+    assert "kanban unavailable" in captured["msg"]
+
+
+def test_handle_kanban_post_returns_503_when_hermes_cli_missing(monkeypatch):
+    """Same fallback contract for POST verb."""
+    bridge = _load_bridge(monkeypatch)
+    monkeypatch.setattr(
+        bridge, "_kb",
+        lambda: (_ for _ in ()).throw(ImportError("hermes_cli missing")),
+    )
+    captured = {}
+
+    def fake_bad(handler, msg, status=400):
+        captured["msg"] = msg
+        captured["status"] = status
+        return True
+
+    monkeypatch.setattr(bridge, "bad", fake_bad)
+
+    class FakeHandler:
+        pass
+
+    parsed = _parsed(path="/api/kanban/tasks")
+    result = bridge.handle_kanban_post(FakeHandler(), parsed, {"title": "x"})
+    assert result is True
+    assert captured["status"] == 503
+
+
+def test_handle_kanban_patch_returns_503_when_hermes_cli_missing(monkeypatch):
+    """Same fallback contract for PATCH verb."""
+    bridge = _load_bridge(monkeypatch)
+    monkeypatch.setattr(
+        bridge, "_kb",
+        lambda: (_ for _ in ()).throw(ImportError("hermes_cli missing")),
+    )
+    captured = {}
+
+    def fake_bad(handler, msg, status=400):
+        captured["msg"] = msg
+        captured["status"] = status
+        return True
+
+    monkeypatch.setattr(bridge, "bad", fake_bad)
+
+    class FakeHandler:
+        pass
+
+    parsed = _parsed(path="/api/kanban/tasks/t_1")
+    result = bridge.handle_kanban_patch(FakeHandler(), parsed, {"title": "x"})
+    assert result is True
+    assert captured["status"] == 503
