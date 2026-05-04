@@ -2765,10 +2765,14 @@ class StreamChannel:
     def subscribe(self) -> queue.Queue:
         q: queue.Queue = queue.Queue()
         with self._lock:
-            snapshot = list(self._offline_buffer)
+            # Replay buffered events to the new subscriber INSIDE the lock so a
+            # concurrent put_nowait() can't broadcast a newer event before we
+            # finish replaying the older buffered tail. queue.Queue.put_nowait
+            # is non-blocking on an unbounded queue, so holding the lock here
+            # is safe. Per Opus advisor on stage-292.
+            for item in self._offline_buffer:
+                q.put_nowait(item)
             self._subscribers.append(q)
-        for item in snapshot:
-            q.put_nowait(item)
         return q
 
     def unsubscribe(self, q: queue.Queue) -> None:
