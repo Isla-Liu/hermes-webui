@@ -1147,6 +1147,70 @@ def _deduplicate_model_ids(groups: list[dict]) -> None:
                 model["label"] = f"{original_id} ({provider_name})"
 
 
+# ── Local-server provider preservation (#1625) ─────────────────────────────
+#
+# LM Studio, Ollama, llama.cpp, vLLM, TabbyAPI etc. are inference servers,
+# not OpenAI-compatible proxies. They register models under their FULL path
+# as the registry key (the HuggingFace-style "namespace/model" id, e.g.
+# "qwen/qwen3.6-27b"). Stripping the namespace prefix would cause a registry
+# miss and the server loads a brand-new instance with default settings,
+# silently ignoring the user's tuned context length / parallel slots.
+#
+# This is distinct from OpenAI-compatible proxies (LiteLLM, OpenRouter relays)
+# where stripping "openai/gpt-5.4" → "gpt-5.4" is the correct behavior.
+#
+# Detection has two layers:
+#   1. Static set of known local-server provider names (canonical + common
+#      custom-provider naming).
+#   2. Loopback / private-host base_url heuristic: an OpenAI-compatible URL
+#      pointing at 127.0.0.1, localhost, or a private IP block is almost
+#      certainly a local model server, regardless of the provider name.
+#      Reuses the same private-IP detection logic used elsewhere in
+#      api/config.py for SSRF host trust.
+_LOCAL_SERVER_PROVIDERS = {
+    "lmstudio",   # canonical (in hermes_cli.models.CANONICAL_PROVIDERS)
+    "ollama",     # via custom_providers, common pattern
+    "llamacpp",   # via custom_providers
+    "llama-cpp",  # alias
+    "vllm",       # via custom_providers
+    "tabby",      # via custom_providers (TabbyAPI)
+    "tabbyapi",   # alias
+    "koboldcpp",  # local llama.cpp UI fork
+    "textgen",    # text-generation-webui (oobabooga) OpenAI-compat extension
+}
+
+
+def _base_url_points_at_local_server(base_url: str) -> bool:
+    """True if base_url's host is a loopback or private IP (likely local server).
+
+    Reuses ipaddress.is_loopback / is_private / is_link_local — the same
+    heuristic used in the `api/config.py` SSRF/credential-routing code.
+    Errors (DNS failure, malformed URL) return False so callers fall back to
+    the static-provider-name check.
+    """
+    if not base_url:
+        return False
+    try:
+        from urllib.parse import urlparse
+        import ipaddress
+        host = (urlparse(base_url).hostname or "").lower()
+        if not host:
+            return False
+        # Plain-text "localhost" doesn't ipaddress-parse but is unambiguous.
+        if host in ("localhost", "ip6-localhost", "ip6-loopback"):
+            return True
+        try:
+            addr = ipaddress.ip_address(host)
+        except ValueError:
+            # Not an IP literal — could be a hostname like "ollama.internal".
+            # Don't try DNS resolution here (slow + ambient): only IP literals
+            # and the `localhost` alias get the no-strip treatment via this path.
+            return False
+        return addr.is_loopback or addr.is_private or addr.is_link_local
+    except Exception:
+        return False
+
+
 def resolve_model_provider(model_id: str) -> tuple:
     """Resolve model name, provider, and base_url for AIAgent.
 
@@ -1250,6 +1314,15 @@ def resolve_model_provider(model_id: str) -> tuple:
         # just because the model name contains a slash (e.g. google/gemma-4-26b-a4b).
         # The user has explicitly pointed at a base_url, so trust their routing config.
         if config_base_url:
+            # Local model servers (LM Studio, Ollama, llama.cpp, vLLM, TabbyAPI)
+            # register models under their full HuggingFace-style id. Stripping the
+            # prefix breaks the lookup and causes a fresh instance to load with
+            # default settings, ignoring user-tuned context length / parallel slots.
+            # See #1625. Detect either by canonical provider name OR by base_url
+            # pointing at a loopback/private host.
+            if (str(config_provider or "").lower() in _LOCAL_SERVER_PROVIDERS
+                    or _base_url_points_at_local_server(config_base_url)):
+                return model_id, config_provider, config_base_url
             # Only strip the provider prefix when it's a known provider namespace
             # (e.g. "openai/gpt-5.4" → "gpt-5.4" for a custom OpenAI-compatible proxy).
             # Unknown prefixes (e.g. "zai-org/GLM-5.1" on DeepInfra) are intrinsic to

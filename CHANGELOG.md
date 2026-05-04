@@ -1,5 +1,26 @@
 # Hermes Web UI -- Changelog
 
+## [v0.50.294] — 2026-05-04
+
+### Fixed (1 PR — streaming stability trio — closes #1623, #1624, #1625)
+
+- **SSE app heartbeat lowered from 30s to 5s at every long-lived handler** (closes #1623) — kernel TCP keepalive (added v0.50.289 / #1581) declares a peer dead at `KEEPIDLE (10s) + KEEPINTVL (5s) × KEEPCNT (3) = 25s` worst-case. The five SSE handlers in `api/routes.py` (main agent stream, terminal, gateway-watcher, approval-poller, clarify-poller) all used 30s, which meant on flaky networks the kernel could tear the socket down before the app sent its first heartbeat byte — flaky-network drops at ~10s that users perceived as "the stream died around 10 seconds in" during long LLM thinking phases. **Fix:** new `_SSE_HEARTBEAT_INTERVAL_SECONDS = 5` constant referenced by every queue-poll site. Cost: ~150B/min when idle (12 extra heartbeats × 12 bytes), negligible. Many production SSE deployments use 5-15s app heartbeats specifically because TCP keepalive isn't reliable across all network paths (proxies, load balancers, mobile NAT). Regression test pins the inequality `app_heartbeat × 2 ≤ kernel_keepalive_window` so future tuning of either timer can't re-introduce the misalignment.
+
+- **`_repair_stale_pending()` no longer fires on fresh turns** (closes #1624) — `_repair_stale_pending` in `api/models.py:716` triggered as soon as `pending_user_message` was set AND `active_stream_id` was missing from the live `STREAMS` registry. There was no time-based staleness guard, so any narrow race between the streaming thread clearing `pending_user_message` and `STREAMS.pop(stream_id)` produced a false-positive "**Previous turn did not complete.**" marker on a turn that actually finished correctly — every command-approval turn reliably reproduced this for at least one user. **Fix:** add `_REPAIR_STALE_PENDING_GRACE_SECONDS = 30` and bail when `time.time() - pending_started_at < grace`. Falsy `pending_started_at` (legacy sidecars from before the field was added in v0.50.283) is treated as "old enough" so legitimate legacy-data recovery still works. Plus a `logger.warning` on every legitimate repair so the next batch of user reports tells us whether the underlying race still fires post-fix. **This is defense-in-depth, not the root-cause fix** — the streaming thread should never exit without clearing pending; tracked separately for future investigation.
+
+- **Local model servers (LM Studio, Ollama, llama.cpp, vLLM, TabbyAPI) now keep their full HuggingFace-style model id** (closes #1625, reported by @akarichan8231) — `resolve_model_provider()` in `api/config.py:1149` stripped the provider prefix from a model id like `qwen/qwen3.6-27b` whenever (a) the model contained `/`, (b) `config.yaml` had `model.base_url` set, and (c) the prefix matched a known entry in `_PROVIDER_MODELS` (e.g. `qwen`, `openai`, `anthropic`, etc.). The strip is correct for OpenAI-compatible **proxies** (LiteLLM, OpenRouter relays) — `openai/gpt-5.4` → `gpt-5.4`. But local model servers are **not** proxies — they register models under their full HuggingFace path as the registry key. Stripping the prefix made LM Studio (or Ollama, llama.cpp, vLLM, TabbyAPI) miss the loaded model and silently load a brand-new instance with default settings, ignoring the user's tuned 131072 context / 4 parallel slots. **Fix:** new `_LOCAL_SERVER_PROVIDERS` set covering canonical names (`lmstudio`, `ollama`, `llamacpp`, `llama-cpp`, `vllm`, `tabby`, `tabbyapi`, `koboldcpp`, `textgen`) and a new `_base_url_points_at_local_server()` heuristic that catches `provider: custom` + `base_url: http://localhost:1234/v1` setups too (via loopback / RFC1918 / IPv6-loopback IP detection). Either signal triggers no-strip. Backward compat is preserved for OpenAI-compatible proxies on public hosts (LiteLLM at `https://litellm.example.com/v1` continues to strip `openai/gpt-5.4` → `gpt-5.4`).
+
+### Tests
+
+4180 → **4226 passing** (+46 regression tests across `tests/test_issue1623_sse_heartbeat_alignment.py` (3), `tests/test_issue1624_repair_stale_pending_grace.py` (9), `tests/test_issue1625_local_server_model_id_preservation.py` (34)). 0 regressions. Full suite in ~120s.
+
+### Pre-release verification
+
+- Self-built fix (nesquena-hermes), pending Opus advisor pre-merge pass and independent review APPROVED by nesquena.
+- `_SSE_HEARTBEAT_INTERVAL_SECONDS × 2 ≤ KEEPIDLE + KEEPINTVL × KEEPCNT` pinned by a regression test that derives the kernel window from `server.py` setsockopt block at runtime.
+- `_repair_stale_pending` grace guard exercised at: 5s-old turn (skip), grace-1s-old turn (skip), grace+30s-old turn (fire), missing/zero/garbage `pending_started_at` (fire — legacy compat), no pending-message (skip — pre-existing contract), live stream (skip — pre-existing contract).
+- `resolve_model_provider` exercised across 7 known local-server provider names + 7 loopback/private IP heuristic cases + backward-compat checks for OpenAI-compatible proxies on public hosts and OpenRouter pass-through. Helper `_base_url_points_at_local_server()` independently unit-tested against 11 url shapes.
+
 ## [v0.50.293] — 2026-05-04
 
 ### Fixed (3 PRs — profile isolation trio + agent version badge + #1597 follow-up)
