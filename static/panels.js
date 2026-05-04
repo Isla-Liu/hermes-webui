@@ -2932,7 +2932,12 @@ function _schedulePreferencesAutosave(){
 
 async function _autosavePreferencesSettings(payload){
   try{
-    await api('/api/settings',{method:'POST',body:JSON.stringify(payload)});
+    const saved=await api('/api/settings',{method:'POST',body:JSON.stringify(payload)});
+    if(payload&&payload.simplified_tool_calling!==undefined){
+      window._simplifiedToolCalling=(saved&&saved.simplified_tool_calling!==false);
+      if(typeof clearMessageRenderCache==='function') clearMessageRenderCache();
+      if(typeof renderMessages==='function') renderMessages();
+    }
     _settingsPreferencesAutosaveRetryPayload=null;
     _setPreferencesAutosaveStatus('saved');
     // Only clear the global dirty flag and hide the unsaved-changes bar when
