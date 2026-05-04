@@ -640,9 +640,12 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
           _smdWrite(displayText);
         } else {
           // Fallback: smd not loaded yet, reconnect session, or smd unavailable — use renderMd
-          assistantBody.innerHTML = (segmentStart===0
+          // for every live segment. Without this, the first segment inserts raw
+          // parsed.displayText and users see unformatted markdown until done.
+          const fallbackText = segmentStart===0
             ? parsed.displayText
-            : renderMd ? renderMd(assistantText.slice(segmentStart)) : assistantText.slice(segmentStart)) || '';
+            : _stripXmlToolCalls(assistantText.slice(segmentStart));
+          assistantBody.innerHTML = renderMd ? renderMd(fallbackText) : esc(fallbackText);
         }
       }
       scrollIfPinned();
