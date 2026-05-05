@@ -4014,7 +4014,23 @@ function clearMessageRenderCache(){
   _sessionHtmlCacheSid=null;
 }
 
-function renderMessages(){
+function _scrollAfterMessageRender(preserveScroll){
+  // Terminal stream renders can happen after S.activeStreamId is cleared.
+  // In that case, preserveScroll asks the normal pin-state helper to decide:
+  // pinned users stay at bottom; users who manually scrolled up stay put.
+  if(preserveScroll){
+    scrollIfPinned();
+    return;
+  }
+  if(S.activeStreamId){
+    scrollIfPinned();
+    return;
+  }
+  scrollToBottom();
+}
+
+function renderMessages(options){
+  const preserveScroll=!!(options&&options.preserveScroll);
   const inner=$('msgInner');
   const sid=S.session?S.session.session_id:null;
   const msgCount=S.messages.length;
@@ -4039,7 +4055,7 @@ function renderMessages(){
       inner.innerHTML=cached.html;
       _sessionHtmlCacheSid=sid;
       _wireMessageWindowLoadEarlierButton();
-      if(S.activeStreamId){scrollIfPinned();}else{scrollToBottom();}
+      _scrollAfterMessageRender(preserveScroll);
       requestAnimationFrame(()=>{highlightCode();addCopyButtons();loadDiffInline();loadCsvInline();loadExcalidrawInline();loadPdfInline();loadHtmlInline();renderMermaidBlocks();renderKatexBlocks();});
       requestAnimationFrame(()=>{highlightCode();addCopyButtons();initTreeViews();loadPdfInline();loadHtmlInline();renderMermaidBlocks();renderKatexBlocks();});
       if(typeof _initMediaPlaybackObserver==='function') _initMediaPlaybackObserver();
@@ -4574,11 +4590,7 @@ function renderMessages(){
   // Only force-scroll when not actively streaming — mid-stream re-renders
   // (tool completion, session switch) must not override the user's scroll position.
   // scrollIfPinned() respects _scrollPinned, so it's a no-op if user scrolled up.
-  if(S.activeStreamId){
-    scrollIfPinned();
-  } else {
-    scrollToBottom();
-  }
+  _scrollAfterMessageRender(preserveScroll);
   // Apply syntax highlighting after DOM is built
   requestAnimationFrame(()=>{highlightCode();addCopyButtons();loadDiffInline();loadCsvInline();loadExcalidrawInline();loadPdfInline();loadHtmlInline();renderMermaidBlocks();renderKatexBlocks();});
   requestAnimationFrame(()=>{highlightCode();addCopyButtons();initTreeViews();loadPdfInline();loadHtmlInline();renderMermaidBlocks();renderKatexBlocks();}); 
