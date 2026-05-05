@@ -29,12 +29,14 @@ let _currentProfileDetail = null; // full profile object
 let _profileMode = 'empty'; // 'empty' | 'read' | 'create'
 let _profilePreFormDetail = null;
 let _pendingSettingsTargetPanel = null; // destination selected while settings had unsaved changes
+let _logsAutoRefreshTimer = null;
+let _lastLogsLines = [];
 
 // Map of panel names → i18n keys for the app titlebar label.
 const APP_TITLEBAR_KEYS = {
   chat: 'tab_chat', tasks: 'tab_tasks', skills: 'tab_skills',
   memory: 'tab_memory', workspaces: 'tab_workspaces',
-  profiles: 'tab_profiles', todos: 'tab_todos', settings: 'tab_settings',
+  profiles: 'tab_profiles', todos: 'tab_todos', insights: 'tab_insights', logs: 'tab_logs', settings: 'tab_settings',
 };
 
 /**
@@ -198,7 +200,7 @@ async function switchPanel(name, opts = {}) {
   // showing-<name> class on <main>; no class means chat (the default).
   const mainEl = document.querySelector('main.main');
   if (mainEl) {
-    ['settings','skills','memory','tasks','kanban','workspaces','profiles','insights'].forEach(p => {
+    ['settings','skills','memory','tasks','kanban','workspaces','profiles','insights','logs'].forEach(p => {
       mainEl.classList.toggle('showing-' + p, nextPanel === p);
     });
   }
@@ -211,6 +213,8 @@ async function switchPanel(name, opts = {}) {
   if (nextPanel === 'profiles') await loadProfilesPanel();
   if (nextPanel === 'todos') loadTodos();
   if (nextPanel === 'insights') await loadInsights();
+  if (nextPanel === 'logs') await loadLogs();
+  _syncLogsAutoRefresh();
   if (nextPanel === 'settings') {
     switchSettingsSection(_currentSettingsSection);
     loadSettingsPanel();
@@ -1981,6 +1985,120 @@ async function archiveKanbanBoard(){
     // Restart the stream on failure so the UI doesn't go stale.
     _kanbanStartPolling();
     showToast(t('kanban_unavailable') + ': ' + (e.message || e), 'error');
+  }
+}
+
+
+// ── Logs panel ──
+function _selectedLogsFile() {
+  const el = $('logsFile');
+  const value = (el && el.value) || 'agent';
+  return ['agent','errors','gateway'].includes(value) ? value : 'agent';
+}
+
+function _selectedLogsTail() {
+  const el = $('logsTail');
+  const value = Number((el && el.value) || 200);
+  return [100,200,500,1000].includes(value) ? value : 200;
+}
+
+function _logLineSeverityClass(line) {
+  const text = String(line || '').toUpperCase();
+  if (/\b(WARNING|WARN)\b/.test(text)) return 'log-line-warning';
+  if (/\b(DEBUG)\b/.test(text)) return 'log-line-debug';
+  if (/\b(INFO)\b/.test(text)) return 'log-line-info';
+  if (/\b(ERROR|CRITICAL|TRACEBACK)\b/.test(text)) return 'log-line-error';
+  return '';
+}
+
+function _syncLogsWrap() {
+  const out = $('logsOutput');
+  const wrap = $('logsWrap');
+  if (out && wrap) out.classList.toggle('wrap', !!wrap.checked);
+}
+
+async function loadLogs(animate) {
+  const box = $('logsOutput');
+  const status = $('logsStatus');
+  const refreshBtn = $('logsRefreshBtn');
+  if (!box) return;
+  if (animate && refreshBtn) {
+    refreshBtn.style.opacity = '0.5';
+    refreshBtn.disabled = true;
+  }
+  const file = _selectedLogsFile();
+  const tail = _selectedLogsTail();
+  try {
+    if (status) status.textContent = t('logs_loading');
+    const data = await api('/api/logs?file=' + encodeURIComponent(file) + '&tail=' + encodeURIComponent(tail));
+    _renderLogs(data);
+  } catch(e) {
+    _lastLogsLines = [];
+    box.innerHTML = `<div class="logs-empty">${esc(t('error_prefix') + e.message)}</div>`;
+    if (status) status.textContent = t('logs_load_failed');
+  } finally {
+    if (animate && refreshBtn) {
+      refreshBtn.style.opacity = '';
+      refreshBtn.disabled = false;
+    }
+    _syncLogsAutoRefresh();
+  }
+}
+
+function _renderLogs(data) {
+  const box = $('logsOutput');
+  const status = $('logsStatus');
+  if (!box) return;
+  const lines = Array.isArray(data && data.lines) ? data.lines : [];
+  _lastLogsLines = lines.slice();
+  const hint = data && data.hint ? `<div class="logs-hint">${esc(data.hint)}</div>` : '';
+  const truncated = data && data.truncated ? `<div class="logs-hint warn">${esc(t('logs_truncated_hint'))}</div>` : '';
+  if (!lines.length) {
+    box.innerHTML = `${hint}${truncated}<div class="logs-empty">${esc(t('logs_empty'))}</div>`;
+  } else {
+    box.innerHTML = `${hint}${truncated}` + lines.map(line => {
+      const cls = _logLineSeverityClass(line);
+      return `<div class="log-line ${cls}">${esc(line)}</div>`;
+    }).join('');
+  }
+  _syncLogsWrap();
+  if (status) {
+    const bytes = data && Number(data.total_bytes || 0);
+    const when = data && data.mtime ? new Date(data.mtime * 1000).toLocaleString() : t('logs_no_mtime');
+    status.textContent = `${lines.length} / ${data.tail || _selectedLogsTail()} lines · ${bytes.toLocaleString()} bytes · ${when}`;
+  }
+}
+
+function _startLogsAutoRefresh() {
+  if (_logsAutoRefreshTimer) return;
+  _logsAutoRefreshTimer = setInterval(() => {
+    if (_currentPanel !== 'logs') { _stopLogsAutoRefresh(); return; }
+    const toggle = $('logsAutoRefresh');
+    if (toggle && !toggle.checked) return;
+    loadLogs(false);
+  }, 5000);
+}
+
+function _stopLogsAutoRefresh() {
+  if (_logsAutoRefreshTimer) {
+    clearInterval(_logsAutoRefreshTimer);
+    _logsAutoRefreshTimer = null;
+  }
+}
+
+function _syncLogsAutoRefresh() {
+  const toggle = $('logsAutoRefresh');
+  if (_currentPanel === 'logs' && (!toggle || toggle.checked)) _startLogsAutoRefresh();
+  else _stopLogsAutoRefresh();
+}
+
+async function copyLogsAll() {
+  const text = _lastLogsLines.join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast(t('logs_copied'));
+  } catch(e) {
+    showToast(t('copy_failed'), 'error');
   }
 }
 
