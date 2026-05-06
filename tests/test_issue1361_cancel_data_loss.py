@@ -315,3 +315,52 @@ class TestCancelWithReasoningOnlyNoText:
             f"Expected no partial msg when nothing was streamed. Got partials: {partial_msgs}"
         assert len(cancel_msgs) == 1, \
             f"Expected exactly 1 cancel marker. Got: {cancel_msgs}"
+
+# ── §D: Error paths must not lose pending user turn ─────────────────────────
+
+def test_stream_error_materializes_pending_user_turn_before_clearing_runtime_state():
+    """If a stream errors before normal merge, pending_user_message must become a
+    durable user message before the error marker is saved. Otherwise reload/server
+    reconcile makes the user's just-submitted prompt disappear.
+    """
+    from api.streaming import _materialize_pending_user_turn_before_error
+
+    sid = "test_pending_error_d1"
+    s = _make_session(
+        session_id=sid,
+        pending_msg="please restart the WebUI",
+        messages=[{"role": "assistant", "content": "previous answer"}],
+    )
+    s.pending_started_at = 1778098700.0
+    s.pending_attachments = [{"name": "screenshot.png"}]
+
+    appended = _materialize_pending_user_turn_before_error(s)
+
+    assert appended is True
+    assert s.messages[-1]["role"] == "user"
+    assert s.messages[-1]["content"] == "please restart the WebUI"
+    assert s.messages[-1]["timestamp"] == 1778098700
+    assert s.messages[-1]["attachments"] == [{"name": "screenshot.png"}]
+    assert s.pending_user_message == "please restart the WebUI"
+
+
+def test_stream_error_pending_materialization_does_not_duplicate_eager_checkpoint():
+    """Eager session-save mode may already have checkpointed the current user turn;
+    the error materializer must not append the same user message again.
+    """
+    from api.streaming import _materialize_pending_user_turn_before_error
+
+    sid = "test_pending_error_d2"
+    s = _make_session(
+        session_id=sid,
+        pending_msg="please restart the WebUI",
+        messages=[
+            {"role": "assistant", "content": "previous answer"},
+            {"role": "user", "content": "please restart the WebUI"},
+        ],
+    )
+
+    appended = _materialize_pending_user_turn_before_error(s)
+
+    assert appended is False
+    assert [m.get("role") for m in s.messages].count("user") == 1
