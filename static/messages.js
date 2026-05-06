@@ -382,7 +382,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     _clearActivePaneInflightIfOwner();
   }
   function _setActivePaneIdleIfOwner(){
-    if(_isActiveSession()||!S.session){
+    if(_isActiveSession()||!S.session||!INFLIGHT[S.session.session_id]){
       setBusy(false);
       setComposerStatus('');
       if(typeof setStatus==='function') setStatus('');
