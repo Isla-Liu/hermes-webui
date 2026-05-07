@@ -789,10 +789,33 @@ def _resolve_configured_provider_id(
     config_obj: dict | None = None,
     *,
     base_url: object = None,
+    resolve_alias: bool = True,
 ) -> str:
+    """Normalize a configured provider id.
+
+    When ``resolve_alias`` is True (default, used for active-provider /
+    badge surfaces), falls through to ``_resolve_provider_alias`` after the
+    named-custom check. When False (used by ``resolve_model_provider``),
+    preserves the raw provider value so downstream local-server detection
+    (`_LOCAL_SERVER_PROVIDERS` membership in #1625) sees the original name
+    like ``ollama`` / ``lm-studio`` rather than alias-collapsed ``custom`` /
+    ``lmstudio``. The base-url-to-named-slug fallback still runs in both
+    modes when applicable.
+
+    See in-stage absorption note on stage-313 for the #1625 regression that
+    motivated the ``resolve_alias`` flag.
+    """
     named_slug = _named_custom_provider_slug_for_provider(provider, config_obj)
     if named_slug:
         return named_slug
+
+    if not resolve_alias:
+        raw = str(provider or "").strip().lower()
+        if base_url and raw == "custom":
+            by_base_url = _named_custom_provider_slug_for_base_url(base_url, config_obj)
+            if by_base_url:
+                return by_base_url
+        return str(provider or "")
 
     resolved = _resolve_provider_alias(provider)
     if (
@@ -1423,6 +1446,7 @@ def resolve_model_provider(model_id: str) -> tuple:
             model_cfg.get("provider"),
             cfg,
             base_url=config_base_url,
+            resolve_alias=False,
         )
 
     # Heal legacy ``provider: local`` entries (written by WebUI < v0.50.252)

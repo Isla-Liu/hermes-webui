@@ -54,6 +54,13 @@ def _isolate_discover_agent_dir(monkeypatch, tmp_path, hermes_path):
     # Force REPO_ROOT.parent to a dir that won't accidentally contain a
     # `hermes-agent` sibling on the dev machine running these tests.
     monkeypatch.setattr(bootstrap, "REPO_ROOT", tmp_path / "isolated-repo-root")
+    # Pin Path.home() to a directory with no `.hermes/hermes-agent` or
+    # `hermes-agent` so the hard-coded `Path.home() / ".hermes" / "hermes-agent"`
+    # / `Path.home() / "hermes-agent"` candidates in `discover_agent_dir()`
+    # cannot pick up the dev machine's real install. Stage-313 absorbed
+    # this in-stage after the original test file isolated only env vars
+    # and REPO_ROOT, missing the Path.home() leakage.
+    monkeypatch.setattr(bootstrap.Path, "home", classmethod(lambda cls: tmp_path / "isolated-home"))
 
 
 def test_discovers_agent_dir_from_hermes_shebang(monkeypatch, tmp_path):
