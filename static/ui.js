@@ -3762,6 +3762,7 @@ function syncTopbar(){
   if(!S.session){
     document.title=window._botName||'Hermes';
     if(typeof syncWorkspaceDisplays==='function') syncWorkspaceDisplays();
+    if(typeof _syncWorkspaceHeadingState==='function') _syncWorkspaceHeadingState();
     if(typeof syncModelChip==='function') syncModelChip();
     if(typeof syncTerminalButton==='function') syncTerminalButton();
     if(typeof _syncHermesPanelSessionActions==='function') _syncHermesPanelSessionActions();
@@ -3795,6 +3796,7 @@ function syncTopbar(){
     }
   }
   if(typeof syncAppTitlebar==='function') syncAppTitlebar();
+  if(typeof _syncWorkspaceHeadingState==='function') _syncWorkspaceHeadingState();
   // If a profile switch just happened, apply its model rather than the session's stale value.
   // S._pendingProfileModel is set by switchToProfile() and cleared here after one application.
   const modelOverride=S._pendingProfileModel;
@@ -6234,16 +6236,37 @@ function bindWorkspaceHeadingActions(){
   };
   heading.onclick=goRoot;
   heading.onkeydown=(e)=>{
+    if(!(S.session&&S.session.workspace)) return;
     if(e.key==='Enter'||e.key===' '){
       e.preventDefault();
       goRoot();
     }
   };
   heading.oncontextmenu=(e)=>{
+    if(!(S.session&&S.session.workspace)) return;
     e.preventDefault();
     e.stopPropagation();
-    if(S.session&&S.session.workspace) _showWorkspaceRootContextMenu(e);
+    _showWorkspaceRootContextMenu(e);
   };
+  _syncWorkspaceHeadingState();
+}
+
+function _syncWorkspaceHeadingState(){
+  const heading=$('workspacePanelHeading');
+  if(!heading) return;
+  const enabled=!!(S.session&&S.session.workspace);
+  heading.classList.toggle('workspace-panel-heading--enabled',enabled);
+  if(enabled){
+    heading.setAttribute('role','button');
+    heading.setAttribute('tabindex','0');
+    heading.setAttribute('aria-disabled','false');
+    heading.title='Workspace root';
+  } else {
+    heading.removeAttribute('role');
+    heading.removeAttribute('tabindex');
+    heading.setAttribute('aria-disabled','true');
+    heading.title=t('no_workspace');
+  }
 }
 if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',bindWorkspaceHeadingActions);
 else bindWorkspaceHeadingActions();
