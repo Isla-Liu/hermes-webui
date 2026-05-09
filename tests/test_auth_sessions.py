@@ -132,3 +132,56 @@ class TestSessionInvalidation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSessionTtlResolution(unittest.TestCase):
+    """Verify the three-layer TTL resolution (env > settings > default)."""
+
+    def test_env_var_overrides_settings(self, monkeypatch):
+        """HERMES_WEBUI_SESSION_TTL env var should take priority."""
+        monkeypatch.setenv("HERMES_WEBUI_SESSION_TTL", "3600")
+        from api.auth import _resolve_session_ttl
+        self.assertEqual(_resolve_session_ttl(), 3600)
+
+    def test_clamps_minimum(self, monkeypatch):
+        """Values below 60 seconds are clamped to 60."""
+        monkeypatch.setenv("HERMES_WEBUI_SESSION_TTL", "10")
+        from api.auth import _resolve_session_ttl
+        self.assertEqual(_resolve_session_ttl(), 60)
+
+    def test_clamps_maximum(self, monkeypatch):
+        """Values above 1 year are clamped to 31536000."""
+        monkeypatch.setenv("HERMES_WEBUI_SESSION_TTL", "100000000")
+        from api.auth import _resolve_session_ttl
+        self.assertEqual(_resolve_session_ttl(), 86400 * 365)
+
+    def test_invalid_env_falls_through(self, monkeypatch):
+        """Non-integer env var falls through to default."""
+        monkeypatch.setenv("HERMES_WEBUI_SESSION_TTL", "not-a-number")
+        from api.auth import _resolve_session_ttl
+        self.assertEqual(_resolve_session_ttl(), 86400 * 365)
+
+    def test_empty_env_falls_through(self, monkeypatch):
+        """Empty env var falls through to default."""
+        monkeypatch.setenv("HERMES_WEBUI_SESSION_TTL", "")
+        from api.auth import _resolve_session_ttl
+        self.assertEqual(_resolve_session_ttl(), 86400 * 365)
+
+    def test_settings_path_returns_value(self, monkeypatch):
+        """settings.json session_ttl_seconds path works when env is unset."""
+        monkeypatch.delenv("HERMES_WEBUI_SESSION_TTL", raising=False)
+        fake_settings = {"session_ttl_seconds": 7200}
+        monkeypatch.setattr("api.auth.load_settings", lambda: fake_settings)
+        from api.auth import _resolve_session_ttl
+        self.assertEqual(_resolve_session_ttl(), 7200)
+
+    def test_session_uses_dynamic_ttl(self):
+        """Newly created sessions should honor the resolved TTL."""
+        auth._sessions.clear()
+        token_hex = auth.create_session().split(".")[0]
+        from api.auth import _sessions
+        for t, exp in _sessions.items():
+            if t == token_hex:
+                expected = time.time() + 86400 * 365  # default
+                self.assertAlmostEqual(exp, expected, delta=5)
+                break

@@ -17,6 +17,26 @@ from api.config import STATE_DIR, load_settings
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_session_ttl() -> int:
+    """Resolve session TTL from env > settings > default.
+
+    Priority mirrors get_password_hash(): HERMES_WEBUI_SESSION_TTL env var
+    first, then settings.json, falling back to 30 days. Clamped to
+    [60s, 1 year] to prevent runaway cookies or self-lockout.
+    """
+    env_v = os.getenv('HERMES_WEBUI_SESSION_TTL', '').strip()
+    if env_v.isdigit():
+        val = int(env_v)
+        if 60 <= val <= 86400 * 365:
+            return val
+    s = load_settings()
+    v = s.get('session_ttl_seconds')
+    if isinstance(v, int) and 60 <= v <= 86400 * 365:
+        return v
+    return 86400 * 30  # current default (30 days)
+
+
 # ── Public paths (no auth required) ─────────────────────────────────────────
 PUBLIC_PATHS = frozenset({
     '/login', '/health', '/favicon.ico', '/sw.js',
@@ -25,7 +45,6 @@ PUBLIC_PATHS = frozenset({
 })
 
 COOKIE_NAME = 'hermes_session'
-SESSION_TTL = 86400 * 30  # 30 days
 
 _SESSIONS_FILE = STATE_DIR / '.sessions.json'
 
@@ -210,7 +229,7 @@ def verify_password(plain) -> bool:
 def create_session() -> str:
     """Create a new auth session. Returns signed cookie value."""
     token = secrets.token_hex(32)
-    _sessions[token] = time.time() + SESSION_TTL
+    _sessions[token] = time.time() + _resolve_session_ttl()
     _save_sessions(_sessions)
     sig = hmac.new(_signing_key(), token.encode(), hashlib.sha256).hexdigest()[:32]
     return f"{token}.{sig}"
@@ -323,7 +342,7 @@ def set_auth_cookie(handler, cookie_value) -> None:
     cookie[COOKIE_NAME]['httponly'] = True
     cookie[COOKIE_NAME]['samesite'] = 'Lax'
     cookie[COOKIE_NAME]['path'] = '/'
-    cookie[COOKIE_NAME]['max-age'] = str(SESSION_TTL)
+    cookie[COOKIE_NAME]['max-age'] = str(_resolve_session_ttl())
     # Set Secure flag when connection is HTTPS
     if getattr(handler.request, 'getpeercert', None) is not None or handler.headers.get('X-Forwarded-Proto', '') == 'https':
         cookie[COOKIE_NAME]['secure'] = True
