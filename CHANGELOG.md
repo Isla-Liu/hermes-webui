@@ -1,5 +1,11 @@
 # Hermes Web UI -- Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **bug(kanban): Kanban panel header `+` button looked dead — now opens a proper create-task modal** ([#1964](https://github.com/nesquena/hermes-webui/issues/1964)). The "New task" button at the top of the Kanban sidebar panel was wired to `createKanbanTask()`, which silently `return`s when the inline `#kanbanNewTaskTitle` input is empty. Because that input lives below five rows of filters (search, assignee, tenant, archived/mine toggles, stats, bulk-action bar), it's typically off-screen on first open — clicking the obvious header `+` did nothing visible. Now the header `+` opens a centered modal overlay (`#kanbanTaskModal`, same `.kanban-modal-overlay` shell as the existing create-board modal) with fields for Title (required), Description, Status (Triage / Todo / Ready), Priority, Assignee (with datalist suggestions from the active board), and Tenant (with datalist). ESC closes, click on backdrop closes, Enter on simple inputs submits (Enter in the description textarea inserts a newline, as expected). Submit hits `/api/kanban/tasks` POST with whichever fields the user populated and auto-opens the new task's detail view. Inline quick-add (`Enter` on `#kanbanNewTaskTitle`) is preserved as a power-user shortcut. Adds 11 new i18n keys across all 8 supported locales (`kanban_title`, `kanban_description`, `kanban_description_placeholder`, `kanban_status`, `kanban_assignee`, `kanban_assignee_placeholder`, `kanban_tenant`, `kanban_tenant_placeholder`, `kanban_priority`, `kanban_priority_hint`, `kanban_title_required`). Improves `.kanban-modal-error` styling so validation errors render as a properly-boxed red alert instead of unstyled body text — benefits the existing create-board modal too. Adds a regression test (`tests/test_kanban_ui_static.py::test_kanban_new_task_header_button_opens_modal`).
+
 ## [v0.51.30] — 2026-05-08 — 3-PR contributor batch (Release G: offline recovery + PWA hardening + opt-in session jump buttons + opt-in endless-scroll)
 
 ### Added (3 PRs, all from @ai-ag2026)
