@@ -3320,6 +3320,7 @@ def _run_agent_streaming(
                         'session_id': session_id,
                         'state': 'evaluating',
                         'message': 'Evaluating goal progress…',
+                        'message_key': 'goal_evaluating_progress',
                     })
                     _goal_decision = evaluate_goal_after_turn(
                         session_id,
@@ -3334,6 +3335,8 @@ def _run_agent_streaming(
                         'session_id': session_id,
                         'state': 'continuing' if decision.get('should_continue') else 'idle',
                         'message': _goal_message,
+                        'message_key': decision.get('message_key') or ('goal_continuing' if _goal_message else ''),
+                        'message_args': decision.get('message_args') or [],
                         'decision': decision,
                     })
                 if decision.get('should_continue'):
@@ -3347,6 +3350,8 @@ def _run_agent_streaming(
                             'continuation_prompt': continuation_prompt,
                             'text': continuation_prompt,
                             'message': _goal_message,
+                            'message_key': decision.get('message_key') or 'goal_continuing',
+                            'message_args': decision.get('message_args') or [],
                             'decision': decision,
                         })
             except Exception as _goal_exc:
