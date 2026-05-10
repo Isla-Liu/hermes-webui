@@ -1179,6 +1179,10 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       try{
         const d=JSON.parse(e.data||'{}');
         if((d.session_id||activeSid)!==activeSid) return;
+        if(d.usage&&typeof _syncCtxIndicator==='function'){
+          S.lastUsage={...(S.lastUsage||{}),...d.usage};
+          _syncCtxIndicator(S.lastUsage);
+        }
         if(d.estimated===true||d.tps_available!==true||typeof d.tps!=='number'||d.tps<=0){
           if(typeof _setLiveAssistantTps==='function') _setLiveAssistantTps(null);
           return;
