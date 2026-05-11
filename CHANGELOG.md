@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **#2083** — Reasoning models (Qwen3-thinking via LM Studio, DeepSeek-R1, Kimi-K2, etc.) no longer trigger a budget-doubling retry on auto-title generation when the model emits hidden reasoning tokens but no visible content (`api/streaming.py:_extract_title_response` and `_title_retry_status`). Pre-fix: a reasoning model that burned its entire 512-token budget on hidden thinking returned `finish_reason: length` with non-empty `reasoning_content`. `_extract_title_response()` classified that as `llm_length`, which triggered the budget-doubling retry path — and since the next call produced the same empty-reasoning shape, the retry just doubled the GPU/credit burn. Repeated across the two prompts in `_title_prompts()` that was up to ~3000 reasoning tokens of GPU work per new chat, and on local LM Studio servers (where `is_lmstudio=False` for `custom:` providers means `reasoning_effort: "none"` never reaches the model) it presented as the GPU never going idle after a prompt. Fix: classify any reasoning-bearing empty response as `llm_empty_reasoning` regardless of `finish_reason`, and short-circuit both the within-prompt budget retry AND the cross-prompt iteration on that status. Length-truncated responses WITHOUT reasoning tokens still get the legitimate budget-doubling retry. Falls through to `_fallback_title_from_exchange` for a local-summary title. Reported by @darkopetrovic. Companion agent-side classifier work (matching LM Studio via `base_url` fingerprint for `custom:` providers) tracked separately on the hermes-agent side.
+
 ## [v0.51.46] — 2026-05-11 — Release V (5-PR contributor batch — CSP report-only + logs panel polish + plugin slash commands + turn-journal crash-safe writer + lifecycle events)
 
 ### Added
