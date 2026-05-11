@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Session recovery polish for #2050: audit now reports WebUI `state.db` rows with missing sidecars and no readable messages as `state_db_orphan_webui_row` / `unsafe_to_repair` instead of silently dropping them, `repair_safe_session_recovery()` exposes an explicit `clean` flag while preserving `ok` for compatibility, `/api/session/recovery/repair-safe` keys its 200/409 status off `clean`, and `MEDIA_ALLOWED_ROOTS` now splits on `os.pathsep` instead of a hard-coded colon.
+
 ## [v0.51.44] — 2026-05-11 — Release T (5-PR contributor batch — security + worktree sessions + LM Studio + onboarding docs + transcript dedup, plus comprehensive test-suite network isolation)
 
 ### Added
