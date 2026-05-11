@@ -102,32 +102,29 @@ def test_allow_outbound_network_fixture_unswaps_the_wrappers(allow_outbound_netw
     socket.socket.connect are restored to their real (unwrapped) implementations
     for this test only.
 
-    Direct identity check is safer than a behavioral test: it doesn't depend
-    on whether the CI runner has outbound network access, only on whether the
-    fixture's monkeypatch actually swapped the symbols.
+    Check by qname so this is robust against pytest re-importing conftest
+    under multiple roots (which produces two distinct function objects with
+    the same __qualname__ but different `is` identity).
     """
-    import tests.conftest as _conftest
-    # Inside the fixture, socket.create_connection should be the REAL one
-    # (the one captured before the module-level wrap), not the blocked wrapper.
-    assert socket.create_connection is _conftest._REAL_CREATE_CONNECTION, (
-        "allow_outbound_network fixture did not restore the real create_connection"
-    )
-    assert socket.socket.connect is _conftest._REAL_SOCKET_CONNECT, (
-        "allow_outbound_network fixture did not restore the real socket.connect"
-    )
+    # Inside the fixture, the symbol should NOT be the blocked wrapper.
+    assert "_hermes_blocked_create_connection" not in getattr(
+        socket.create_connection, "__qualname__", ""
+    ), "allow_outbound_network fixture did not restore the real create_connection"
+    assert "_hermes_blocked_socket_connect" not in getattr(
+        socket.socket.connect, "__qualname__", ""
+    ), "allow_outbound_network fixture did not restore the real socket.connect"
 
 
 def test_block_is_active_outside_the_fixture():
     """Sanity: a test that does NOT request the fixture has the wrapped
-    socket.create_connection installed (not the real one).
+    socket.create_connection installed.
 
-    Pairs with the test above to prove the fixture swap is real — the
-    fixture test confirms the unswap; this test confirms the default-on
-    state."""
-    import tests.conftest as _conftest
-    assert socket.create_connection is _conftest._hermes_blocked_create_connection, (
-        "default state should have the blocked wrapper installed on socket.create_connection"
-    )
-    assert socket.socket.connect is _conftest._hermes_blocked_socket_connect, (
-        "default state should have the blocked wrapper installed on socket.socket.connect"
-    )
+    Check by qname so this is robust against pytest re-importing conftest
+    under multiple roots (which produces two distinct function objects with
+    the same __qualname__ but different `is` identity)."""
+    assert "_hermes_blocked_create_connection" in getattr(
+        socket.create_connection, "__qualname__", ""
+    ), "default state should have the blocked wrapper installed on socket.create_connection"
+    assert "_hermes_blocked_socket_connect" in getattr(
+        socket.socket.connect, "__qualname__", ""
+    ), "default state should have the blocked wrapper installed on socket.socket.connect"
