@@ -1480,9 +1480,31 @@ def _custom_slug_rest_looks_like_host_port(rest: str) -> bool:
 
 
 def _get_provider_base_url(provider_id):
-    """Look up the configured base_url for a provider (e.g. lmstudio)."""
+    """Look up the configured base_url for a provider (e.g. lmstudio).
+
+    Checks two locations, in order:
+      1. ``cfg["providers"][<provider_id>]["base_url"]`` — the explicit
+         per-provider override.
+      2. ``cfg["model"]["base_url"]`` — falls back here when
+         ``cfg["model"]["provider"] == provider_id``. This is the historical
+         shape (the model block carries both the active provider AND the
+         base URL for that provider in a single record).
+
+    Returns the URL stripped of trailing ``/`` if configured, otherwise None.
+    """
     prov_cfg = cfg.get("providers", {}).get(provider_id, {}) or {}
-    return (prov_cfg.get("base_url") or "").rstrip("/") or None
+    explicit = (prov_cfg.get("base_url") or "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    model_cfg = cfg.get("model", {}) or {}
+    if isinstance(model_cfg, dict):
+        model_provider = str(model_cfg.get("provider") or "").strip().lower()
+        if model_provider == str(provider_id).strip().lower():
+            model_base = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            if model_base:
+                return model_base
+    return None
+
 
 def resolve_model_provider(model_id: str) -> tuple:
     """Resolve model name, provider, and base_url for AIAgent.
@@ -3415,7 +3437,7 @@ def get_available_models() -> dict:
                             # the profile's .env has been injected into the process environment.
                             lm_cfg = cfg.get("providers", {}).get("lmstudio", {})
                             if isinstance(lm_cfg, dict):
-                                lm_base_url = str(lm_cfg.get("base_url") or "").strip().rstrip("/")
+                                lm_base_url = _get_provider_base_url("lmstudio") or ""
                                 lm_api_key = str(lm_cfg.get("api_key") or "").strip()
                                 if lm_base_url:
                                     headers = {"User-Agent": "OpenAI/Python 1.0"}
