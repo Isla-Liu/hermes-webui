@@ -695,7 +695,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     _streamFadeLatestAnimationEndAt=0;
     _streamFadeLastRevealCount=0;
   }
-  function _cancelPendingStreamRender(){
+  function _cancelAnimationFramePendingStreamRender(){
     if(_pendingRafHandle===null) return;
     cancelAnimationFrame(_pendingRafHandle);
     clearTimeout(_pendingRafHandle);
@@ -1197,7 +1197,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
         // the DOM is settled by renderMessages, so no trailing token/reasoning rAF
         // can reintroduce a stale thinking card or duplicate content.
         _streamFinalized=true;
-        _cancelPendingStreamRender();
+        _cancelAnimationFramePendingStreamRender();
         if(typeof finalizeThinkingCard==='function') finalizeThinkingCard();
         // Finalize smd parser — flushes any remaining buffered markdown state
         // and runs Prism + copy buttons on the live segment before the DOM is replaced
@@ -1342,7 +1342,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
         sendBrowserNotification('Response complete',assistantText?assistantText.slice(0,100):'Task finished');
       };
       if(_shouldUseStreamFade()&&assistantBody){
-        _cancelPendingStreamRender();
+        _cancelAnimationFramePendingStreamRender();
         _drainStreamFadeBeforeDone(_finishDone);
         return;
       }
@@ -1441,7 +1441,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       _terminalStateReached=true;
       if(_persistTimer){clearTimeout(_persistTimer);_persistTimer=null;}
       _streamFinalized=true;
-      _cancelPendingStreamRender();
+      _cancelAnimationFramePendingStreamRender();
       _smdEndParser();
       if(typeof finalizeThinkingCard==='function') finalizeThinkingCard();
       // Application-level error sent explicitly by the server (rate limit, crash, etc.)
@@ -1527,7 +1527,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       _terminalStateReached=true;
       if(_persistTimer){clearTimeout(_persistTimer);_persistTimer=null;}
       _streamFinalized=true;
-      _cancelPendingStreamRender();
+      _cancelAnimationFramePendingStreamRender();
       _smdEndParser();
       if(typeof finalizeThinkingCard==='function') finalizeThinkingCard();
       source.close();
@@ -1621,7 +1621,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     // cannot fire after renderMessages() has settled the DOM with the error message.
     if(_persistTimer){clearTimeout(_persistTimer);_persistTimer=null;}
     _streamFinalized=true;
-    _cancelPendingStreamRender();
+    _cancelAnimationFramePendingStreamRender();
     if(typeof finalizeThinkingCard==='function') finalizeThinkingCard();
     _clearOwnerInflightState();
     _closeSource();

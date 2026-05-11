@@ -38,7 +38,7 @@ Added local fade state:
 Key helpers:
 
 - `_resetStreamFadeState()`
-- `_cancelPendingStreamRender()`
+- `_cancelAnimationFramePendingStreamRender()`
 - `_shouldUseStreamFade()`
 - `_streamFadeWordCountOf(text)`
 - `_streamFadeNextText(targetText)`
