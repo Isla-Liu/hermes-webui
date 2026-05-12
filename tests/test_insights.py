@@ -292,3 +292,29 @@ def test_insights_css_chart_shrink_safe():
     assert 'minmax(0,1fr)' in chart_line, f'chart must use minmax(0,1fr) for shrink-safe columns, got: {chart_line}'
     assert 'overflow:hidden' in chart_line, 'chart must have overflow:hidden to prevent horizontal scroll'
     assert 'max-width:100%' in chart_line or 'max-width' in chart_line, 'chart should constrain max-width'
+
+
+def test_insights_mobile_layout_stacks_usage_grid():
+    # Regression test for issue #2104: Token Breakdown + Models should
+    # stack on mobile instead of being side-by-side causing horizontal overflow
+    assert 'insights-usage-grid' in PANELS_JS
+    # Scoped mobile breakpoint that forces single-column layout
+    assert '@media (max-width: 640px)' in STYLE_CSS
+    assert '.insights-usage-grid' in STYLE_CSS
+    assert 'grid-template-columns: 1fr' in STYLE_CSS
+
+
+def test_insights_mobile_models_table_has_contained_overflow():
+    # Regression test for issue #2104: Models table should have contained
+    # horizontal scrolling instead of pushing the whole page off-screen
+    assert 'insights-model-table' in PANELS_JS
+    # The mobile rule should include overflow-x handling for the models card/table
+    # Search for the specific mobile rule that contains insights-usage-grid
+    insights_mobile = '/* ── Mobile layout for Token Breakdown + Models'
+    assert insights_mobile in STYLE_CSS, 'Issue #2104 mobile rules should exist in CSS'
+    # Get the block from our specific mobile section to the next section comment
+    section_start = STYLE_CSS.find(insights_mobile)
+    section_end = STYLE_CSS.find('/* ── Checkpoints', section_start)
+    section_block = STYLE_CSS[section_start:section_end]
+    assert 'overflow-x' in section_block, 'Mobile rule should include overflow-x handling'
+    assert 'insights-model-table' in section_block or 'insights-card' in section_block
