@@ -2770,6 +2770,8 @@ def _run_agent_streaming(
                         'model': _fb_entry.get('model', ''),
                         'provider': _fb_entry.get('provider', ''),
                         'base_url': _fb_entry.get('base_url'),
+                        'api_key': _fb_entry.get('api_key'),
+                        'key_env': _fb_entry.get('key_env'),
                     }
 
             # Build kwargs defensively — guard newer params so the WebUI
