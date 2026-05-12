@@ -1657,6 +1657,36 @@ let _messageUserUnpinned=false;
 let _bottomSettleToken=0;
 const NON_MESSAGE_SCROLL_INTENT_SUPPRESS_MS=350;
 const MESSAGE_UPWARD_INTENT_MS=450;
+function _isIosStandalonePwa(){
+  try{
+    const ua=navigator.userAgent||'';
+    const isIosDevice=/iP(?:hone|ad|od)/i.test(ua)
+      || (navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+    if(!isIosDevice) return false;
+    const standalone=(typeof navigator!=='undefined'&&navigator.standalone===true)
+      || (typeof window.matchMedia==='function'&&window.matchMedia('(display-mode: standalone)').matches)
+      || (typeof window.matchMedia==='function'&&window.matchMedia('(display-mode: fullscreen)').matches);
+    if(!standalone) return false;
+    return typeof window.matchMedia!=='function' || window.matchMedia('(pointer: coarse)').matches;
+  }catch(_){
+    return false;
+  }
+}
+function _messagePanePreferredBottomScrollTop(el){
+  if(!el) return 0;
+  const maxTop=Math.max(0,el.scrollHeight-el.clientHeight);
+  if(maxTop<=1) return maxTop;
+  return _isIosStandalonePwa()?maxTop-1:maxTop;
+}
+function _maybeInsetIosStandaloneBottomEdge(el, top){
+  if(!el||!_isIosStandalonePwa()) return;
+  const preferredTop=_messagePanePreferredBottomScrollTop(el);
+  if(preferredTop<=0||top<el.scrollHeight-el.clientHeight) return;
+  _programmaticScroll=true;
+  el.scrollTop=preferredTop;
+  _lastScrollTop=el.scrollTop;
+  requestAnimationFrame(()=>{ setTimeout(()=>{_programmaticScroll=false;},0); });
+}
 function _cancelBottomSettle(){ _bottomSettleToken++; }
 function _recordNonMessageScrollIntent(e){
   const el=document.getElementById('messages');
@@ -1716,6 +1746,7 @@ if (typeof window !== 'undefined') window._resetScrollDirectionTracker = _resetS
         } else { _nearBottomCount=0; _scrollPinned=false; }
         if(_scrollPinned) _messageUserUnpinned=false;
       } // #1360
+      _maybeInsetIosStandaloneBottomEdge(el, top);
       const btn=$('scrollToBottomBtn');
       if(btn) btn.style.display=_scrollPinned?'none':'flex';
       if(typeof _updateSessionStartJumpButton==='function') _updateSessionStartJumpButton();
@@ -2009,7 +2040,7 @@ function _setMessageScrollToBottom(){
   const el=$('messages');
   if(!el) return;
   _programmaticScroll=true;
-  el.scrollTop=el.scrollHeight;
+  el.scrollTop=_messagePanePreferredBottomScrollTop(el);
   _lastScrollTop=el.scrollTop;
   _nearBottomCount=2;
   _scrollPinned=true;
