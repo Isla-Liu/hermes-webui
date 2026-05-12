@@ -538,9 +538,9 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   let _streamFadeHoldUntilMs=0;
   let _streamFadeReduceMotionMql=null;
   let _streamFadeReduceMotion=false;
-  const _STREAM_FADE_MS=160;
-  const _STREAM_FADE_STAGGER_MS=12;
-  const _STREAM_FADE_DONE_MAX_MS=220;
+  const _STREAM_FADE_MS=240;
+  const _STREAM_FADE_STAGGER_MS=16;
+  const _STREAM_FADE_DONE_MAX_MS=320;
   const _streamFadeEnabledForStream=window._fadeTextEffect===true;
 
   // rAF-throttled rendering: buffer tokens, render at most once per frame
