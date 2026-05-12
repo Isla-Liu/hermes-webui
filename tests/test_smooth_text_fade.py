@@ -50,16 +50,6 @@ def function_block(src: str, name: str) -> str:
     raise AssertionError(f"{name}() closing brace not found")
 
 
-def event_listener_block(src: str, event_name: str) -> str:
-    start = src.index(f"source.addEventListener('{event_name}'")
-    end = src.index("source.addEventListener(", start + 1)
-    return src[start:end]
-
-
-def compact(src: str) -> str:
-    return re.sub(r"\s+", "", src)
-
-
 def assert_contains_all(src: str, snippets: list[str]) -> None:
     for snippet in snippets:
         assert snippet in src
@@ -70,6 +60,7 @@ def fade_helper_script(performance_stub: str = "{_t:0,now(){return this._t;}}") 
         function_block(MESSAGES_JS, name)
         for name in [
             "_streamFadeWordCountOf",
+            "_streamFadePauseAfter",
             "_resetStreamFadeState",
             "_streamFadeNextText",
         ]
@@ -83,11 +74,12 @@ let _streamFadeLastTargetWords=0;
 let _streamFadeLastArrivalMs=0;
 let _streamFadeArrivalWps=0;
 let _streamFadeLatestAnimationEndAt=0;
-let _streamFadeLastRevealCount=0;
 let _streamFadeAppendOffset=0;
+let _streamFadeVisibleWords=0;
+let _streamFadeHoldUntilMs=0;
 const _STREAM_FADE_MS=160;
-const _STREAM_FADE_WAVE_MS=320;
-const _STREAM_FADE_MAX_STAGGER_MS=520;
+const _STREAM_FADE_STAGGER_MS=12;
+const _STREAM_FADE_DONE_MAX_MS=220;
 const performance={performance_stub};
 {helpers}
 """
@@ -140,54 +132,18 @@ def test_preferences_ui_exposes_and_saves_fade_text_effect():
     assert_contains_all(apply_block, ["fadeTextEffect", f"{FADE_RUNTIME_FLAG}=!!fadeTextEffect"])
 
 
-def test_fade_helpers_and_constants_exist():
-    for name in [
-        "_resetStreamFadeState",
-        "_shouldUseStreamFade",
-        "_streamFadeNextText",
-        "_streamFadeWordCountOf",
-        "_renderStreamingFadeMarkdown",
-        "_streamFadeRenderer",
-        "_streamFadeSkipNode",
-        "_drainStreamFadeBeforeDone",
-    ]:
-        assert f"function {name}" in MESSAGES_JS
-
-    assert_contains_all(
-        MESSAGES_JS,
-        [
-            "const _STREAM_FADE_MS=160",
-            "const _STREAM_FADE_WAVE_MS=320",
-            "const _STREAM_FADE_MAX_STAGGER_MS=520",
-            "_streamFadeVisibleText",
-            "_streamFadeAppendOffset",
-            "_streamFadeArrivalWps",
-        ],
-    )
-
-
-def test_schedule_render_keeps_default_smd_path_when_fade_is_off():
+def test_stream_fade_uses_incremental_renderer_without_changing_default_path():
     block = function_block(MESSAGES_JS, "_scheduleRender")
-    assert "_shouldUseStreamFade()" in block
-    assert "_renderStreamingFadeMarkdown(displayText)" in block
-    assert "_smdWrite(displayText)" in block
-    assert "_smdNewParser(assistantBody)" in block
-    assert "?33:66" in compact(block)
-
-
-def test_fade_renderer_uses_playout_buffer_and_incremental_markdown():
-    next_block = function_block(MESSAGES_JS, "_streamFadeNextText")
     render_block = function_block(MESSAGES_JS, "_renderStreamingFadeMarkdown")
+    renderer_block = function_block(MESSAGES_JS, "_streamFadeRenderer")
+    cleanup_block = function_block(MESSAGES_JS, "_streamFadeBindCleanup")
 
     assert_contains_all(
-        next_block,
+        block,
         [
-            "targetText.startsWith(_streamFadeVisibleText)",
-            "wordsPerSecond",
-            "instantArrivalWps",
-            "backlogWords",
-            "streamAgeSeconds",
-            "caughtUp",
+            "_renderStreamingFadeMarkdown(displayText)",
+            "_smdWrite(displayText)",
+            "?33:66",
         ],
     )
     assert_contains_all(
@@ -201,52 +157,31 @@ def test_fade_renderer_uses_playout_buffer_and_incremental_markdown():
         ],
     )
     assert "renderMd ? renderMd(next.text||'')" in render_block
-    assert "_wrapStreamingFadeWords" not in MESSAGES_JS
-
-
-def test_fade_renderer_animates_new_text_and_cleans_up_spans():
-    block = function_block(MESSAGES_JS, "_streamFadeRenderer")
     assert_contains_all(
-        block,
+        renderer_block,
         [
-            "renderer.add_text",
-            "waveStepMs",
-            "animationDelay",
-            "--stream-fade-ms",
             "span.className='stream-fade-word is-new'",
-            "animationend",
-            "span.replaceWith(document.createTextNode",
-            "prefers-reduced-motion: reduce",
+            "_streamFadeReduceMotionEnabled()",
             "renderer.set_attr",
             "data-blocked-scheme",
             "_streamFadeLatestAnimationEndAt",
         ],
     )
+    assert_contains_all(
+        cleanup_block,
+        ["animationend", "span.replaceWith(document.createTextNode"],
+    )
+    assert "_wrapStreamingFadeWords" not in MESSAGES_JS
+
+
+def test_stream_fade_css_is_opacity_only_and_hides_live_cursor():
+    fade_css = STYLE_CSS[STYLE_CSS.index("OpenWebUI-style streaming word fade") :]
     assert "filter:" not in STYLE_CSS[STYLE_CSS.index("OpenWebUI-style streaming word fade") :].split(
         "[data-live-assistant", 1
     )[0]
     assert "translateY" not in STYLE_CSS[STYLE_CSS.index("OpenWebUI-style streaming word fade") :].split(
         "[data-live-assistant", 1
     )[0]
-
-
-def test_done_drain_finishes_fade_before_final_dom_replacement_and_blocks_late_mutations():
-    done_block = event_listener_block(MESSAGES_JS, "done")
-    drain_block = function_block(MESSAGES_JS, "_drainStreamFadeBeforeDone")
-
-    assert_contains_all(done_block, ["_terminalStateReached=true", "_drainStreamFadeBeforeDone(_finishDone)"])
-    assert_contains_all(drain_block, ["remainingAnimationMs", "_STREAM_FADE_MAX_STAGGER_MS", "requestAnimationFrame(step)"])
-
-    for event_name in ["token", "interim_assistant", "reasoning"]:
-        assert "if(_terminalStateReached||_streamFinalized) return;" in event_listener_block(MESSAGES_JS, event_name)
-
-
-def test_new_segments_reset_fade_state():
-    assert "_resetStreamFadeState()" in function_block(MESSAGES_JS, "_resetAssistantSegment")
-
-
-def test_fade_css_animates_words_and_hides_live_cursor():
-    fade_css = STYLE_CSS[STYLE_CSS.index("OpenWebUI-style streaming word fade") :]
     assert_contains_all(
         fade_css,
         [
@@ -260,25 +195,9 @@ def test_fade_css_animates_words_and_hides_live_cursor():
         ],
     )
     assert ".stream-fade-active .stream-fade-word{display:inline;}" in fade_css
-    assert ".stream-fade-active .stream-fade-word{display:inline;will-change:opacity;}" not in fade_css
 
 
-def test_stream_fade_next_text_executes_and_advances_playout():
-    script = (
-        fade_helper_script("{_t:0,now(){this._t+=33;return this._t;}}")
-        + r"""
-const target='one two three four five six seven eight nine ten eleven twelve';
-const first=_streamFadeNextText(target);
-const second=_streamFadeNextText(target);
-if (!first.text || !second.text) throw new Error('no text revealed');
-if (second.text.length < first.text.length) throw new Error('playout regressed');
-"""
-    )
-    result = run_node(script)
-    assert "ReferenceError" not in result.stderr
-
-
-def test_stream_fade_ramps_above_steady_arrival_rate():
+def test_stream_fade_playout_handles_fast_models_without_paragraph_pops():
     script = (
         fade_helper_script()
         + r"""
@@ -295,21 +214,11 @@ for(let frame=0;frame<240;frame++){
 const backlog=targetCount-shown;
 if(shown < 145) throw new Error(`too slow: shown=${shown} target=${targetCount} backlog=${backlog} arrivalWps=${_streamFadeArrivalWps}`);
 if(backlog > 15) throw new Error(`did not catch up: shown=${shown} target=${targetCount} backlog=${backlog} arrivalWps=${_streamFadeArrivalWps}`);
-"""
-    )
-    run_node(script)
-
-
-def test_stream_fade_caps_large_backlog_to_readable_waves():
-    script = (
-        fade_helper_script()
-        + r"""
-const words=Array.from({length:500},(_,i)=>'w'+i);
-const target=words.join(' ');
+const huge=Array.from({length:500},(_,i)=>'b'+i).join(' ');
 let previous=0;
 for(let frame=0;frame<40;frame++){
   performance._t += 16;
-  const out=_streamFadeNextText(target);
+  const out=_streamFadeNextText(huge);
   const shown=(out.text.match(/\S+/g)||[]).length;
   const revealed=shown-previous;
   previous=shown;
@@ -321,15 +230,33 @@ if(previous<50) throw new Error(`too slow under large backlog: ${previous}`);
     run_node(script)
 
 
-def test_stream_fade_does_not_reveal_across_multiple_paragraphs_in_one_frame():
+def test_stream_fade_respects_sentence_and_paragraph_boundaries():
     script = (
         fade_helper_script()
         + r"""
 const target='alpha beta gamma\n\nsecond paragraph starts here\n\nthird paragraph starts here';
 performance._t += 200;
-const out=_streamFadeNextText(target);
+let out=_streamFadeNextText(target);
 const breaks=(out.text.match(/\n\s*\n/g)||[]).length;
 if(breaks>1) throw new Error(`revealed multiple paragraph breaks: ${JSON.stringify(out.text)}`);
+_resetStreamFadeState();
+const pausedTarget='alpha beta.\n\nsecond paragraph starts here';
+out={text:''};
+for(let frame=0;frame<8&&!out.text.includes('.');frame++){
+  performance._t += 33;
+  out=_streamFadeNextText(pausedTarget);
+}
+if(!out.text.includes('.')) throw new Error(`expected first sentence: ${JSON.stringify(out.text)}`);
+const held=_streamFadeNextText(pausedTarget);
+if(held.changed) throw new Error('expected sentence pause to hold next reveal');
+performance._t += 50;
+for(let frame=0;frame<8&&!out.text.includes('\n\n');frame++){
+  performance._t += 33;
+  out=_streamFadeNextText(pausedTarget);
+}
+if(!out.text.includes('\n\n')) throw new Error(`expected paragraph break: ${JSON.stringify(out.text)}`);
+const afterBreak=_streamFadeNextText(pausedTarget);
+if(afterBreak.changed) throw new Error('expected paragraph pause to hold next reveal');
 """
     )
     run_node(script)

@@ -533,11 +533,14 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   let _streamFadeLastArrivalMs=0;
   let _streamFadeArrivalWps=0;
   let _streamFadeLatestAnimationEndAt=0;
-  let _streamFadeLastRevealCount=0;
   let _streamFadeAppendOffset=0;
+  let _streamFadeVisibleWords=0;
+  let _streamFadeHoldUntilMs=0;
+  let _streamFadeReduceMotionMql=null;
+  let _streamFadeReduceMotion=false;
   const _STREAM_FADE_MS=160;
-  const _STREAM_FADE_WAVE_MS=320;
-  const _STREAM_FADE_MAX_STAGGER_MS=520;
+  const _STREAM_FADE_STAGGER_MS=12;
+  const _STREAM_FADE_DONE_MAX_MS=220;
   const _streamFadeEnabledForStream=window._fadeTextEffect===true;
 
   // rAF-throttled rendering: buffer tokens, render at most once per frame
@@ -700,8 +703,9 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     _streamFadeLastArrivalMs=0;
     _streamFadeArrivalWps=0;
     _streamFadeLatestAnimationEndAt=0;
-    _streamFadeLastRevealCount=0;
     _streamFadeAppendOffset=0;
+    _streamFadeVisibleWords=0;
+    _streamFadeHoldUntilMs=0;
   }
   function _cancelAnimationFramePendingStreamRender(){
     if(_pendingRafHandle===null) return;
@@ -718,7 +722,28 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     const tag=(node.tagName||'').toLowerCase();
     return tag==='pre'||tag==='code'||tag==='script'||tag==='style'||tag==='textarea'||tag==='svg'||tag==='math';
   }
+  function _streamFadeReduceMotionEnabled(){
+    if(!window.matchMedia) return false;
+    if(!_streamFadeReduceMotionMql){
+      _streamFadeReduceMotionMql=window.matchMedia('(prefers-reduced-motion: reduce)');
+      _streamFadeReduceMotion=!!_streamFadeReduceMotionMql.matches;
+      const onChange=e=>{_streamFadeReduceMotion=!!e.matches;};
+      try{_streamFadeReduceMotionMql.addEventListener('change',onChange);}
+      catch(_){try{_streamFadeReduceMotionMql.addListener(onChange);}catch(_){}}
+    }
+    return _streamFadeReduceMotion;
+  }
+  function _streamFadeBindCleanup(el){
+    if(!el||el._streamFadeCleanupBound) return;
+    el._streamFadeCleanupBound=true;
+    el.addEventListener('animationend',e=>{
+      const span=e.target;
+      if(!span||!span.classList||!span.classList.contains('stream-fade-word')) return;
+      span.replaceWith(document.createTextNode(span.textContent||''));
+    });
+  }
   function _streamFadeRenderer(el){
+    _streamFadeBindCleanup(el);
     const renderer=window.smd.default_renderer(el);
     const baseAddText=renderer.add_text;
     const baseSetAttr=renderer.set_attr;
@@ -728,10 +753,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       const frag=document.createDocumentFragment();
       const wordRe=/(\S+)(\s*)/g;
       const value=String(text||'');
-      const revealedThisFrame=Math.max(1,_streamFadeLastRevealCount||1);
-      const fadeMs=revealedThisFrame>=8?_STREAM_FADE_WAVE_MS:revealedThisFrame>=4?240:_STREAM_FADE_MS;
-      const waveStepMs=revealedThisFrame>=18?18:revealedThisFrame>=8?22:revealedThisFrame>=4?16:12;
-      const reduceMotion=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const reduceMotion=_streamFadeReduceMotionEnabled();
       let last=0, match, changed=false;
       while((match=wordRe.exec(value))){
         if(match.index>last) frag.appendChild(document.createTextNode(value.slice(last,match.index)));
@@ -744,14 +766,13 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
         }
         const span=document.createElement('span');
         span.className='stream-fade-word is-new';
-        const delayMs=Math.min(_streamFadeAppendOffset*waveStepMs,_STREAM_FADE_MAX_STAGGER_MS);
+        const delayMs=_streamFadeAppendOffset*_STREAM_FADE_STAGGER_MS;
         span.style.animationDelay=delayMs+'ms';
-        span.style.setProperty('--stream-fade-ms',fadeMs+'ms');
+        span.style.setProperty('--stream-fade-ms',_STREAM_FADE_MS+'ms');
         span.textContent=match[1];
-        span.addEventListener('animationend',()=>span.replaceWith(document.createTextNode(span.textContent||'')),{once:true});
         frag.appendChild(span);
         _streamFadeAppendOffset+=1;
-        _streamFadeLatestAnimationEndAt=Math.max(_streamFadeLatestAnimationEndAt,performance.now()+delayMs+fadeMs);
+        _streamFadeLatestAnimationEndAt=Math.max(_streamFadeLatestAnimationEndAt,performance.now()+delayMs+_STREAM_FADE_MS);
         if(match[2]) frag.appendChild(document.createTextNode(match[2]));
         last=match.index+match[0].length;
         changed=true;
@@ -776,6 +797,13 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     const m=String(text||'').match(/\S+/g);
     return m?m.length:0;
   }
+  function _streamFadePauseAfter(text, paragraphBreakIndex){
+    if(paragraphBreakIndex>=0) return 90;
+    const trimmed=String(text||'').trimEnd();
+    if(/[.!?]["')\]]*$/.test(trimmed)) return 45;
+    if(/[:;]["')\]]*$/.test(trimmed)) return 30;
+    return 0;
+  }
   function _streamFadeNextText(targetText){
     targetText=String(targetText||'');
     const now=performance.now();
@@ -797,7 +825,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
 
     const remaining=targetText.slice(_streamFadeVisibleText.length);
     const backlogWords=_streamFadeWordCountOf(remaining);
-    const targetWords=_streamFadeWordCountOf(targetText);
+    const targetWords=_streamFadeVisibleWords+backlogWords;
     const elapsedMs=Math.max(16,Math.min(120,now-_streamFadeLastTickMs));
     _streamFadeLastTickMs=now;
 
@@ -825,6 +853,10 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       _streamFadeArrivalWps=0;
     }
 
+    if(now<_streamFadeHoldUntilMs){
+      return {text:_streamFadeVisibleText,caughtUp:false,changed:false};
+    }
+
     const streamAgeSeconds=Math.max(0, (now-(_streamFadeStartedAt||now))/1000);
     const baseWps=22 + Math.min(streamAgeSeconds*2.5, 28); // 22 → 50 wps over long answers
     const arrivalWps=_streamFadeArrivalWps ? Math.min(_streamFadeArrivalWps*1.05 + 8, 90) : 0;
@@ -838,8 +870,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     // playback still catches up, but whole paragraphs no longer pop in at once.
     const waveCap=backlogWords>=160?3:2;
     wordsToReveal=Math.min(wordsToReveal,waveCap,backlogWords);
-    if(wordsToReveal<1){_streamFadeLastRevealCount=0;return {text:_streamFadeVisibleText,caughtUp:false,changed:false};}
-    _streamFadeLastRevealCount=Math.min(wordsToReveal, backlogWords);
+    if(wordsToReveal<1) return {text:_streamFadeVisibleText,caughtUp:false,changed:false};
     _streamFadeWordCarry=Math.max(0,_streamFadeWordCarry-wordsToReveal);
 
     let cut=0;
@@ -850,9 +881,15 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       wordsToReveal-=1;
     }
     if(cut<=0) cut=Math.min(remaining.length,4);
-    const paragraphBreak=remaining.slice(0,cut).search(/\n\s*\n/);
-    if(paragraphBreak>0) cut=paragraphBreak+2;
-    _streamFadeVisibleText+=remaining.slice(0,cut);
+    const chunk=remaining.slice(0,cut);
+    const paragraphMatch=chunk.match(/\n\s*\n/);
+    const paragraphBreak=paragraphMatch ? paragraphMatch.index : -1;
+    if(paragraphMatch) cut=paragraphBreak+paragraphMatch[0].length;
+    const revealed=remaining.slice(0,cut);
+    _streamFadeVisibleText+=revealed;
+    _streamFadeVisibleWords+=_streamFadeWordCountOf(revealed);
+    const pauseMs=_streamFadePauseAfter(revealed,paragraphBreak);
+    if(pauseMs) _streamFadeHoldUntilMs=now+pauseMs;
     if(_streamFadeVisibleText.length>targetText.length) _streamFadeVisibleText=targetText;
     return {text:_streamFadeVisibleText,caughtUp:_streamFadeVisibleText===targetText,changed:true};
   }
@@ -893,10 +930,10 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
         // Let the last released words visibly finish their stagger + fade before
         // the final renderMessages() DOM replacement removes the live spans.
         const remainingAnimationMs=Math.max(_STREAM_FADE_MS, _streamFadeLatestAnimationEndAt-performance.now());
-        setTimeout(onDone, Math.min(remainingAnimationMs, _STREAM_FADE_WAVE_MS+_STREAM_FADE_MAX_STAGGER_MS));
+        setTimeout(onDone, Math.min(remainingAnimationMs, _STREAM_FADE_DONE_MAX_MS));
         return;
       }
-      setTimeout(()=>requestAnimationFrame(step), 16);
+      setTimeout(()=>requestAnimationFrame(step), 33);
     };
     step();
   }
