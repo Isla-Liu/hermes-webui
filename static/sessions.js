@@ -246,7 +246,10 @@ function _isSessionEffectivelyStreaming(s) {
 function _purgeStaleInflightEntries() {
   // Clean up INFLIGHT entries for sessions the server confirms are NOT
   // streaming. This prevents the in-memory cache from growing unbounded
-  // when streams end abnormally. (#2066)
+  // when streams end abnormally. (#2066)  Additionally, any INFLIGHT entry
+  // whose session id is no longer present in the current _allSessions list
+  // (deleted / archived / filtered out) is also removed so that ghost entries
+  // from deleted sessions do not accumulate. (#2092)
   if (typeof INFLIGHT !== 'object' || !INFLIGHT) return;
   const sessionsById = new Map();
   if (Array.isArray(_allSessions)) {
@@ -255,11 +258,20 @@ function _purgeStaleInflightEntries() {
     }
   }
   for (const sid of Object.keys(INFLIGHT)) {
+    if (!sessionsById.has(sid)) {
+      // Session is absent from _allSessions — it was deleted / archived /
+      // filtered and can never stream again, so drop the entry.
+      delete INFLIGHT[sid];
+      if (typeof clearInflightState === 'function') clearInflightState(sid);
+      continue;
+    }
     const s = sessionsById.get(sid);
-    if (s && !s.is_streaming) {
+    if (!s.is_streaming) {
+      // Session exists but is not streaming — purge it.
       delete INFLIGHT[sid];
       if (typeof clearInflightState === 'function') clearInflightState(sid);
     }
+    // Sessions that exist and are still streaming are preserved.
   }
 }
 
