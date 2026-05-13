@@ -538,7 +538,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   let _streamFadeHoldUntilMs=0;
   let _streamFadeReduceMotionMql=null;
   let _streamFadeReduceMotion=false;
-  const _STREAM_FADE_MS=240;
+  const _STREAM_FADE_MS=200;
   const _STREAM_FADE_STAGGER_MS=16;
   const _STREAM_FADE_DONE_MAX_MS=320;
   const _streamFadeEnabledForStream=window._fadeTextEffect===true;
@@ -861,7 +861,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     const baseWps=22 + Math.min(streamAgeSeconds*2.5, 28); // 22 → 50 wps over long answers
     const arrivalWps=_streamFadeArrivalWps ? Math.min(_streamFadeArrivalWps*1.05 + 8, 90) : 0;
     const backlogWps=backlogWords>0 ? Math.min(22 + backlogWords*1.1, 100) : 0;
-    const wordsPerSecond=Math.min(100, Math.max(baseWps, arrivalWps, backlogWps));
+    const wordsPerSecond=Math.min(160, Math.max(baseWps, arrivalWps, backlogWps));
 
     _streamFadeWordCarry+=elapsedMs*wordsPerSecond/1000;
     if(!_streamFadeVisibleText) _streamFadeWordCarry=Math.max(_streamFadeWordCarry,1);
