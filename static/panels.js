@@ -425,11 +425,13 @@ async function loadCrons(animate) {
       item.id = 'cron-' + job.id;
       const status = _cronStatusMeta(job);
       const isNewRun = _cronNewJobIds.has(String(job.id));
+      const isAgentMode = !job.no_agent;
       const profileLabel = _cronProfileLabel(job.profile);
       const profileTitle = _cronProfileTitle(job.profile);
       item.innerHTML = `
         <div class="cron-header">
           ${isNewRun ? '<span class="cron-new-dot" title="New run"></span>' : ''}
+          ${isAgentMode ? '<span class="cron-agent-badge" title="Agent mode">🤖</span>' : ''}
           <span class="cron-name" title="${esc(job.name)}">${esc(job.name)}</span>
           <span class="cron-profile-badge" title="${esc(profileTitle)}">${esc(profileLabel)}</span>
           <span class="cron-status ${status.listClass}">${esc(status.label)}</span>
@@ -468,6 +470,11 @@ function _renderCronDetail(job){
   const deliver = job.deliver || 'local';
   const isNoAgent = !!job.no_agent;
   const cronJobMode = isNoAgent ? 'no-agent' : 'agent';
+  const modelProvider =
+    job.provider && job.model ? `${esc(job.provider)}/${esc(job.model)}` :
+    job.model ? esc(job.model) :
+    job.provider ? esc(job.provider) :
+    isNoAgent ? '' : 'default';
   const script = job.script || '';
   const profileLabel = _cronProfileLabel(job.profile);
   const profileTitle = _cronProfileTitle(job.profile);
@@ -498,7 +505,7 @@ function _renderCronDetail(job){
         <div class="detail-row"><div class="detail-row-label">${esc(t('cron_next'))}</div><div class="detail-row-value">${esc(nextRun)}</div></div>
         <div class="detail-row"><div class="detail-row-label">${esc(t('cron_last'))}</div><div class="detail-row-value">${esc(lastRun)}</div></div>
         <div class="detail-row"><div class="detail-row-label">Deliver</div><div class="detail-row-value">${esc(deliver)}</div></div>
-        <div class="detail-row"><div class="detail-row-label">Mode</div><div class="detail-row-value"><span class="detail-badge" id="cronJobMode">${esc(cronJobMode)}</span></div></div>
+        <div class="detail-row"><div class="detail-row-label">Mode</div><div class="detail-row-value"><span class="detail-badge" id="cronJobMode">${esc(cronJobMode)}</span>${modelProvider ? ` <code>${modelProvider}</code>` : ''}</div></div>
         ${isNoAgent ? `<div class="detail-row"><div class="detail-row-label">No-agent script</div><div class="detail-row-value"><code>${esc(script || '—')}</code></div></div>` : ''}
         <div class="detail-row"><div class="detail-row-label">${esc(t('cron_profile_label') || 'Profile')}</div><div class="detail-row-value"><span class="detail-badge active" title="${esc(profileTitle)}">${esc(profileLabel)}</span></div></div>
         <div class="detail-row"><div class="detail-row-label">${esc(t('cron_toast_notifications_label') || 'Completion toasts')}</div><div class="detail-row-value"><span class="detail-badge ${toastNotifications ? 'active' : ''}">${esc(toastNotifications ? (t('cron_toast_notifications_enabled') || 'Enabled') : (t('cron_toast_notifications_disabled') || 'Disabled'))}</span></div></div>
