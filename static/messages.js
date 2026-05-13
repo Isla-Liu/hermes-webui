@@ -536,10 +536,12 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   let _streamFadeAppendOffset=0;
   let _streamFadeVisibleWords=0;
   let _streamFadeHoldUntilMs=0;
+  let _streamFadeCurrentMs=200;
   let _streamFadeReduceMotionMql=null;
   let _streamFadeReduceMotion=false;
   let _streamFadeReduceMotionOnChange=null;
   const _STREAM_FADE_MS=200;
+  const _STREAM_FADE_MAX_MS=350;
   const _STREAM_FADE_STAGGER_MS=16;
   const _STREAM_FADE_DONE_MAX_MS=320;
   const _streamFadeEnabledForStream=window._fadeTextEffect===true;
@@ -707,6 +709,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     _streamFadeAppendOffset=0;
     _streamFadeVisibleWords=0;
     _streamFadeHoldUntilMs=0;
+    _streamFadeCurrentMs=_STREAM_FADE_MS;
   }
   function _cancelAnimationFramePendingStreamRender(){
     if(_pendingRafHandle===null) return;
@@ -775,12 +778,14 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
         }
         const span=document.createElement('span');
         span.className='stream-fade-word is-new';
+        const fadeMs=_streamFadeCurrentMs||_STREAM_FADE_MS;
         const delayMs=_streamFadeAppendOffset*_STREAM_FADE_STAGGER_MS;
         span.style.animationDelay=delayMs+'ms';
+        if(fadeMs!==_STREAM_FADE_MS) span.style.setProperty('--stream-fade-ms',fadeMs+'ms');
         span.textContent=match[1];
         frag.appendChild(span);
         _streamFadeAppendOffset+=1;
-        _streamFadeLatestAnimationEndAt=Math.max(_streamFadeLatestAnimationEndAt,appendStartedAt+delayMs+_STREAM_FADE_MS);
+        _streamFadeLatestAnimationEndAt=Math.max(_streamFadeLatestAnimationEndAt,appendStartedAt+delayMs+fadeMs);
         if(match[2]) frag.appendChild(document.createTextNode(match[2]));
         last=match.index+match[0].length;
         changed=true;
@@ -867,9 +872,11 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
 
     const streamAgeSeconds=Math.max(0, (now-(_streamFadeStartedAt||now))/1000);
     const baseWps=22 + Math.min(streamAgeSeconds*2.5, 28); // 22 → 50 wps over long answers
-    const arrivalWps=_streamFadeArrivalWps ? Math.min(_streamFadeArrivalWps*1.05 + 8, 90) : 0;
-    const backlogWps=backlogWords>0 ? Math.min(22 + backlogWords*1.1, 100) : 0;
+    const arrivalWps=_streamFadeArrivalWps ? Math.min(_streamFadeArrivalWps*1.05 + 8, 160) : 0;
+    const backlogWps=backlogWords>0 ? Math.min(22 + backlogWords*1.1, 160) : 0;
     const wordsPerSecond=Math.min(160, Math.max(baseWps, arrivalWps, backlogWps));
+    const speedFadeRatio=Math.max(0,Math.min(1,(wordsPerSecond-50)/(160-50)));
+    _streamFadeCurrentMs=Math.round(_STREAM_FADE_MS+(_STREAM_FADE_MAX_MS-_STREAM_FADE_MS)*speedFadeRatio);
 
     _streamFadeWordCarry+=elapsedMs*wordsPerSecond/1000;
     if(!_streamFadeVisibleText) _streamFadeWordCarry=Math.max(_streamFadeWordCarry,1);

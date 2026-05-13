@@ -77,7 +77,9 @@ let _streamFadeLatestAnimationEndAt=0;
 let _streamFadeAppendOffset=0;
 let _streamFadeVisibleWords=0;
 let _streamFadeHoldUntilMs=0;
+let _streamFadeCurrentMs=200;
 const _STREAM_FADE_MS=200;
+const _STREAM_FADE_MAX_MS=350;
 const _STREAM_FADE_STAGGER_MS=16;
 const _STREAM_FADE_DONE_MAX_MS=320;
 const performance={performance_stub};
@@ -163,6 +165,7 @@ def test_stream_fade_uses_incremental_renderer_without_changing_default_path():
             "span.className='stream-fade-word is-new'",
             "_streamFadeReduceMotionEnabled()",
             "const appendStartedAt=performance.now()",
+            "--stream-fade-ms",
             "renderer.set_attr",
             "data-blocked-scheme",
             "_streamFadeLatestAnimationEndAt",
@@ -204,6 +207,25 @@ def test_stream_fade_reduced_motion_listener_is_cleaned_up_on_terminal_paths():
     assert "removeEventListener('change',_streamFadeReduceMotionOnChange)" in MESSAGES_JS
     assert "removeListener(_streamFadeReduceMotionOnChange)" in MESSAGES_JS
     assert MESSAGES_JS.count("_streamFadeCleanupReduceMotionListener();") >= 4
+
+
+def test_stream_fade_duration_scales_up_with_playback_speed():
+    script = (
+        fade_helper_script()
+        + r"""
+const words=Array.from({length:260},(_,i)=>'w'+i).join(' ');
+performance._t += 33;
+let out=_streamFadeNextText('slow start');
+if(!out.changed) throw new Error('expected initial reveal');
+if(_streamFadeCurrentMs !== 200) throw new Error(`expected base fade 200ms, got ${_streamFadeCurrentMs}`);
+for(let frame=0;frame<20&&_streamFadeCurrentMs<350;frame++){
+  performance._t += 120;
+  out=_streamFadeNextText(words);
+}
+if(_streamFadeCurrentMs !== 350) throw new Error(`expected max fade 350ms, got ${_streamFadeCurrentMs}`);
+"""
+    )
+    run_node(script)
 
 
 def test_stream_fade_playout_handles_fast_models_without_paragraph_pops():
