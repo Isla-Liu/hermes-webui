@@ -3,7 +3,7 @@ Regression tests for #893 — cancel_stream() now preserves partial streamed
 assistant content rather than discarding it.
 
 Before this fix, clicking Stop Generation threw away all streamed text. The
-session was saved with only '*Task cancelled.*' appended, so the user lost
+session was saved with only a cancellation marker appended, so the user lost
 whatever the agent had produced up to that point.
 
 After this fix:
@@ -118,7 +118,7 @@ class TestCancelStreamPreservesPartial:
         assert any('Python is a high-level programming language' in c for c in msg_contents), (
             f"Partial text not found in session messages: {msg_contents}"
         )
-        assert any('*Task cancelled.*' in c for c in msg_contents), (
+        assert any('Task cancelled:' in c for c in msg_contents), (
             "Cancel marker missing from session messages"
         )
         # Partial message should NOT have _error=True (it's real content)
@@ -127,8 +127,9 @@ class TestCancelStreamPreservesPartial:
         assert partial_msg.get('_partial') is True
         assert not partial_msg.get('_error')
         # Cancel marker should have _error=True
-        cancel_msg = next(m for m in saved.messages if '*Task cancelled.*' in m.get('content', ''))
+        cancel_msg = next(m for m in saved.messages if 'Task cancelled:' in m.get('content', ''))
         assert cancel_msg.get('_error') is True
+        assert cancel_msg.get('provider_details_label') == 'Cancellation details'
 
     def test_cancel_stream_with_no_partial_text_still_saves_cancel_marker(self, tmp_path, monkeypatch):
         """If no tokens were streamed before cancel, only the cancel marker is saved."""
@@ -168,7 +169,7 @@ class TestCancelStreamPreservesPartial:
 
         saved = Session.load('sess_nopartial')
         msg_contents = [m.get('content', '') for m in saved.messages]
-        assert any('*Task cancelled.*' in c for c in msg_contents)
+        assert any('Task cancelled:' in c for c in msg_contents)
         # No extra partial message when there was nothing streamed
         assert not any(m.get('_partial') for m in saved.messages), (
             "Should not add partial message when no tokens were streamed"
