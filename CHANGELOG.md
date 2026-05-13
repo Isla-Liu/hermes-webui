@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- **Issue #2152** — Literal discussions of reasoning tags such as `<think>` and `</think>` no longer disappear from saved or re-rendered assistant messages. WebUI now treats `<think>...</think>`, MiniMax `<|channel>thought...<channel|>`, and Gemma 4 `<|turn|>thinking...<turn|>` blocks as hidden reasoning metadata only when the wrapper is the first non-whitespace content in the response; provider wrappers with leading whitespace still strip as before.
+
 - **PR #2191** by @lucasrc (auth refactor 1/3) — Thread-safe login rate limiter (new `_LOGIN_ATTEMPTS_LOCK`) + PBKDF2 key separation (new `_pbkdf2_key()` reading `.pbkdf2_key` separately from `_signing_key()` reading `.signing_key` — previously both shared `.signing_key`, a key-reuse anti-pattern across HMAC and PBKDF2 primitives) + transparent migration in `verify_password()` that re-salts legacy hashes with the new key on next successful login. 241-line regression suite covering the lock + migration paths. Split from earlier #2167 per maintainer review request.
 
 - **PR #2192** by @lucasrc (auth refactor 2/3, depends on #2191) — Invalidate password-hash cache when password changes via the Settings panel. The PR #2191 cache lives for the process lifetime, but `save_settings({'_set_password': ...})` could mutate `settings.json.password_hash` without telling the auth module — leaving the cache stale and verifying against the old password until restart. Now `save_settings()` calls `_invalidate_password_hash_cache()` on both `_set_password` and `_clear_password` paths. 52-line regression suite + `verify_password()` simplified to rely on the new hook instead of doing the invalidation itself.
