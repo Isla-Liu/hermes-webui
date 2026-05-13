@@ -141,6 +141,7 @@ _ACCOUNT_USAGE_SUBPROCESS_CODE = r"""
 import base64
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from urllib import request as urllib_request
@@ -150,6 +151,7 @@ from agent.account_usage import fetch_account_usage
 
 _CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _CODEX_POOL_USAGE_TIMEOUT_SECONDS = 4.0
+_CODEX_POOL_MAX_WORKERS = 6
 
 
 def _iso(value):
@@ -529,50 +531,69 @@ def _codex_pool_snapshot(entries, rows, queried):
     )
 
 
+def _codex_pool_exhausted_row(entry, index):
+    label = _safe_entry_label(entry, index)
+    return {
+        "label": label,
+        "status": "exhausted",
+        "plan": None,
+        "windows": [],
+        "details": [],
+        "unavailable_reason": _entry_pool_exhausted_reason(entry),
+        "fetched_at": None,
+    }
+
+
+def _probe_codex_pool_entry(item):
+    index, entry = item
+    label = _safe_entry_label(entry, index)
+    did_query_count = 0
+    try:
+        snapshot, did_query, reason = _fetch_codex_entry_snapshot(entry)
+        if did_query:
+            did_query_count = 1
+    except Exception as exc:
+        snapshot = None
+        reason = str(exc)
+    windows = _snapshot_windows_payload(snapshot) if snapshot is not None else []
+    details = _snapshot_details_payload(snapshot) if snapshot is not None else []
+    snapshot_available = _snapshot_available(snapshot)
+    status = "available" if snapshot_available else "unavailable"
+    row = {
+        "label": label,
+        "status": status,
+        "plan": getattr(snapshot, "plan", None) if snapshot is not None else None,
+        "windows": windows,
+        "details": details,
+        "unavailable_reason": None if snapshot_available else _safe_unavailable_reason(reason or getattr(snapshot, "unavailable_reason", None)),
+        "fetched_at": _iso(getattr(snapshot, "fetched_at", None)) if snapshot is not None else None,
+    }
+    return index, row, did_query_count
+
+
 def _fetch_codex_account_usage_from_pool():
     try:
         from agent.credential_pool import load_pool
 
         pool = load_pool("openai-codex")
-        entries = pool.entries() if pool is not None and hasattr(pool, "entries") else []
+        entries = list(pool.entries()) if pool is not None and hasattr(pool, "entries") else []
         if not entries:
             return None
-        rows = []
+        rows_by_index = {}
+        probe_items = []
         queried = 0
         for index, entry in enumerate(entries, start=1):
-            label = _safe_entry_label(entry, index)
-            pool_exhausted = _entry_is_pool_exhausted(entry)
-            if pool_exhausted:
-                rows.append({
-                    "label": label,
-                    "status": "exhausted",
-                    "plan": None,
-                    "windows": [],
-                    "details": [],
-                    "unavailable_reason": _entry_pool_exhausted_reason(entry),
-                    "fetched_at": None,
-                })
-                continue
-            try:
-                snapshot, did_query, reason = _fetch_codex_entry_snapshot(entry)
-                if did_query:
-                    queried += 1
-            except Exception as exc:
-                snapshot = None
-                reason = str(exc)
-            windows = _snapshot_windows_payload(snapshot) if snapshot is not None else []
-            details = _snapshot_details_payload(snapshot) if snapshot is not None else []
-            snapshot_available = _snapshot_available(snapshot)
-            status = "available" if snapshot_available else "unavailable"
-            rows.append({
-                "label": label,
-                "status": status,
-                "plan": getattr(snapshot, "plan", None) if snapshot is not None else None,
-                "windows": windows,
-                "details": details,
-                "unavailable_reason": None if snapshot_available else _safe_unavailable_reason(reason or getattr(snapshot, "unavailable_reason", None)),
-                "fetched_at": _iso(getattr(snapshot, "fetched_at", None)) if snapshot is not None else None,
-            })
+            if _entry_is_pool_exhausted(entry):
+                rows_by_index[index] = _codex_pool_exhausted_row(entry, index)
+            else:
+                probe_items.append((index, entry))
+        if probe_items:
+            max_workers = min(_CODEX_POOL_MAX_WORKERS, len(probe_items))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                for index, row, did_query_count in executor.map(_probe_codex_pool_entry, probe_items):
+                    rows_by_index[index] = row
+                    queried += did_query_count
+        rows = [rows_by_index[index] for index in range(1, len(entries) + 1)]
         return _codex_pool_snapshot(entries, rows, queried)
     except Exception:
         return None
@@ -587,8 +608,6 @@ except Exception:
 if str(provider or "").strip().lower() == "openai-codex":
     pool_snapshot = _fetch_codex_account_usage_from_pool()
     if isinstance(getattr(pool_snapshot, "pool", None), dict):
-        snapshot = pool_snapshot
-    elif not _snapshot_available(snapshot) and _snapshot_available(pool_snapshot):
         snapshot = pool_snapshot
 print(json.dumps(_snapshot_payload(snapshot)))
 """
@@ -1146,6 +1165,17 @@ def _get_cached_account_usage(cache_key: tuple[str, str, str]) -> tuple[bool, An
     return False, None
 
 
+def invalidate_account_usage_status_cache(provider_id: str | None = None) -> None:
+    normalized = str(provider_id or "").strip().lower()
+    with _account_usage_status_cache_lock:
+        if not normalized:
+            _account_usage_status_cache.clear()
+            return
+        for key in list(_account_usage_status_cache):
+            if key[0] == normalized:
+                _account_usage_status_cache.pop(key, None)
+
+
 def _set_cached_account_usage(cache_key: tuple[str, str, str], snapshot: Any) -> None:
     now = time.monotonic()
     with _account_usage_status_cache_lock:
@@ -1213,7 +1243,7 @@ def _agent_fetch_account_usage_for_home(provider: str, home: Path, *, api_key: s
     return _account_usage_payload_to_snapshot(payload)
 
 
-def _fetch_account_usage_with_profile_context(provider: str) -> Any:
+def _fetch_account_usage_with_profile_context(provider: str, *, refresh: bool = False) -> Any:
     """Fetch account usage for a provider within the active profile context.
 
     Concurrency is capped by the module-level BoundedSemaphore so that rapid
@@ -1227,9 +1257,10 @@ def _fetch_account_usage_with_profile_context(provider: str) -> Any:
     home = _get_hermes_home()
     api_key = _get_provider_api_key(provider)
     cache_key = _account_usage_cache_key(provider, home, api_key)
-    cache_hit, cached = _get_cached_account_usage(cache_key)
-    if cache_hit:
-        return cached
+    if not refresh:
+        cache_hit, cached = _get_cached_account_usage(cache_key)
+        if cache_hit:
+            return cached
     sem = _get_account_usage_probe_semaphore()
     try:
         with sem:
@@ -1246,8 +1277,8 @@ def _fetch_account_usage_with_profile_context(provider: str) -> Any:
         return None
 
 
-def _provider_account_usage_status(provider: str, display_name: str) -> dict[str, Any]:
-    snapshot = _fetch_account_usage_with_profile_context(provider)
+def _provider_account_usage_status(provider: str, display_name: str, *, refresh: bool = False) -> dict[str, Any]:
+    snapshot = _fetch_account_usage_with_profile_context(provider, refresh=refresh)
     account_limits = _serialize_account_usage_snapshot(snapshot)
     if account_limits and account_limits.get("available"):
         return {
@@ -1282,7 +1313,7 @@ def _provider_account_usage_status(provider: str, display_name: str) -> dict[str
     }
 
 
-def get_provider_quota(provider_id: str | None = None) -> dict[str, Any]:
+def get_provider_quota(provider_id: str | None = None, *, refresh: bool = False) -> dict[str, Any]:
     """Return sanitized quota/rate-limit status for the active provider.
 
     OpenRouter keeps its documented key endpoint. OAuth-backed account usage
@@ -1303,7 +1334,7 @@ def get_provider_quota(provider_id: str | None = None) -> dict[str, Any]:
 
     display_name = _PROVIDER_DISPLAY.get(provider, provider.replace("-", " ").title())
     if provider in _ACCOUNT_USAGE_PROVIDERS:
-        return _provider_account_usage_status(provider, display_name)
+        return _provider_account_usage_status(provider, display_name, refresh=refresh)
 
     if provider != "openrouter":
         detail = "OpenAI/Anthropic rate-limit headers are a follow-up once WebUI captures provider response metadata."

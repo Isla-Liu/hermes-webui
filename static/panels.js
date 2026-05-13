@@ -5654,7 +5654,7 @@ function _buildProviderQuotaPoolBreakdown(accountLimits){
   const planText=planParts.length?`<div class="provider-quota-pool-plans">Plans: ${esc(planParts.join(', '))}</div>`:'';
   return `
     <details class="provider-quota-pool"${defaultOpen?' open':''}>
-      <summary><span>Credential pool</span><strong>${esc(summaryParts.join(' · '))}</strong></summary>
+      <summary><span class="provider-quota-pool-summary-label"><span class="provider-quota-pool-chevron" aria-hidden="true"></span><span>Credential pool</span></span><strong>${esc(summaryParts.join(' · '))}</strong></summary>
       ${planText}
       <div class="provider-quota-pool-rows">${rows}</div>
     </details>

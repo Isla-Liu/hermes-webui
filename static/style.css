@@ -2514,6 +2514,9 @@ main.main.showing-logs > #mainLogs{display:flex;}
 .provider-quota-pool{width:100%;min-width:0;border:1px solid var(--border);border-radius:10px;background:var(--sidebar);overflow:hidden;}
 .provider-quota-pool summary{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;list-style:none;padding:9px 10px;font-size:12px;color:var(--text);font-weight:650;}
 .provider-quota-pool summary::-webkit-details-marker{display:none;}
+.provider-quota-pool-summary-label{display:flex;align-items:center;gap:7px;min-width:0;}
+.provider-quota-pool-chevron{width:7px;height:7px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg);transition:transform .16s ease;opacity:.75;flex:0 0 auto;}
+.provider-quota-pool[open] .provider-quota-pool-chevron{transform:rotate(45deg);}
 .provider-quota-pool summary strong{font-size:11px;color:var(--muted);font-weight:600;text-align:right;}
 .provider-quota-pool-plans{padding:0 10px 8px;font-size:11px;color:var(--muted);}
 .provider-quota-pool-rows{display:flex;flex-direction:column;gap:8px;padding:0 10px 10px;min-width:0;}

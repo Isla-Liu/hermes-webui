@@ -527,6 +527,100 @@ def test_codex_account_usage_subprocess_retries_expired_pool_exhaustion(monkeypa
     assert token not in output
 
 
+def test_codex_account_usage_subprocess_probes_pool_entries_concurrently(monkeypatch, capsys):
+    """Eligible pool credentials should be probed concurrently and reported in pool order."""
+    import api.providers as providers
+
+    def b64url(payload: bytes) -> str:
+        return base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+
+    def token_for(account_id: str) -> str:
+        return ".".join((
+            b64url(b'{"alg":"none","typ":"JWT"}'),
+            b64url(json.dumps({
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": account_id,
+                },
+            }).encode("utf-8")),
+            b64url(b"signature"),
+        ))
+
+    token_a = token_for("acct-a")
+    token_b = token_for("acct-b")
+    events = []
+    events_lock = threading.Lock()
+    barrier = threading.Barrier(2, timeout=2)
+
+    agent_mod = types.ModuleType("agent")
+    agent_mod.__path__ = []
+    account_usage_mod = types.ModuleType("agent.account_usage")
+    credential_pool_mod = types.ModuleType("agent.credential_pool")
+
+    def fake_fetch_account_usage(provider, *, base_url=None, api_key=None):
+        return None
+
+    class FakePool:
+        def entries(self):
+            return [
+                SimpleNamespace(
+                    label="Slow A",
+                    runtime_api_key=token_a,
+                    runtime_base_url="https://chatgpt.com/backend-api/codex",
+                    last_status=None,
+                ),
+                SimpleNamespace(
+                    label="Slow B",
+                    runtime_api_key=token_b,
+                    runtime_base_url="https://chatgpt.com/backend-api/codex",
+                    last_status=None,
+                ),
+            ]
+
+        def select(self):
+            raise AssertionError("quota display must not rotate credential_pool selection")
+
+    def fake_load_pool(provider):
+        return FakePool()
+
+    def fake_urlopen(req, timeout):
+        headers = {key.lower(): value for key, value in req.header_items()}
+        account_id = headers.get("chatgpt-account-id")
+        with events_lock:
+            events.append(("enter", account_id))
+        barrier.wait()
+        with events_lock:
+            events.append(("exit", account_id))
+        used = 80 if account_id == "acct-a" else 10
+        payload = {
+            "plan_type": "team",
+            "rate_limit": {
+                "primary_window": {"used_percent": used, "reset_at": "2030-03-17T17:30:00Z"},
+            },
+        }
+        return _FakeResponse(json.dumps(payload).encode("utf-8"))
+
+    account_usage_mod.fetch_account_usage = fake_fetch_account_usage
+    credential_pool_mod.load_pool = fake_load_pool
+    monkeypatch.setitem(sys.modules, "agent", agent_mod)
+    monkeypatch.setitem(sys.modules, "agent.account_usage", account_usage_mod)
+    monkeypatch.setitem(sys.modules, "agent.credential_pool", credential_pool_mod)
+    monkeypatch.setattr(providers.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sys, "argv", ["quota-probe", "openai-codex", ""])
+
+    exec(providers._ACCOUNT_USAGE_SUBPROCESS_CODE, {"__name__": "__main__"})
+
+    output = capsys.readouterr().out.strip()
+    snapshot = json.loads(output)
+    first_exit = next(index for index, event in enumerate(events) if event[0] == "exit")
+
+    assert [event[0] for event in events[:first_exit]] == ["enter", "enter"]
+    assert snapshot["pool"]["queried_credentials"] == 2
+    assert [row["label"] for row in snapshot["pool"]["credentials"]] == ["Slow A", "Slow B"]
+    assert snapshot["pool"]["best_remaining_by_window"][0]["credential_label"] == "Slow B"
+    assert snapshot["pool"]["best_remaining_by_window"][0]["remaining_percent"] == 90.0
+    assert token_a not in output
+    assert token_b not in output
+
 
 def test_codex_account_usage_subprocess_sanitizes_pool_entry_errors(monkeypatch, capsys):
     """Pool per-entry failures must not leak bearer/JWT-like exception text."""
@@ -741,34 +835,111 @@ def test_account_usage_profile_fetch_uses_short_lived_cache(monkeypatch, tmp_pat
     old_cfg, old_mtime = _with_config(model={"provider": "openai-codex"})
     providers._account_usage_status_cache.clear()
     calls = []
-    snapshot = SimpleNamespace(
-        provider="openai-codex",
-        source="usage_api_pool",
-        title="Account limits",
-        plan=None,
-        windows=(),
-        details=(),
-        available=True,
-        unavailable_reason=None,
-        fetched_at=datetime(2030, 3, 17, 12, 30, tzinfo=timezone.utc),
-        pool={"total_credentials": 1, "credentials": []},
-    )
+    snapshots = [
+        SimpleNamespace(
+            provider="openai-codex",
+            source="usage_api_pool",
+            title="Account limits",
+            plan=None,
+            windows=(),
+            details=(),
+            available=True,
+            unavailable_reason=None,
+            fetched_at=datetime(2030, 3, 17, 12, 30, tzinfo=timezone.utc),
+            pool={"total_credentials": 1, "credentials": []},
+        ),
+        SimpleNamespace(
+            provider="openai-codex",
+            source="usage_api_pool",
+            title="Account limits",
+            plan=None,
+            windows=(),
+            details=(),
+            available=True,
+            unavailable_reason=None,
+            fetched_at=datetime(2030, 3, 17, 12, 31, tzinfo=timezone.utc),
+            pool={"total_credentials": 1, "credentials": []},
+        ),
+    ]
 
     def fake_fetch(provider, home, api_key=None):
         calls.append((provider, str(home), api_key))
-        return snapshot
+        return snapshots[len(calls) - 1]
 
     monkeypatch.setattr(providers, "_agent_fetch_account_usage_for_home", fake_fetch)
     try:
         first = providers._fetch_account_usage_with_profile_context("openai-codex")
         second = providers._fetch_account_usage_with_profile_context("openai-codex")
+        refreshed_status = providers.get_provider_quota("openai-codex", refresh=True)
+        after_refresh = providers._fetch_account_usage_with_profile_context("openai-codex")
     finally:
         providers._account_usage_status_cache.clear()
         _restore_config(old_cfg, old_mtime)
 
-    assert first is snapshot
-    assert second is snapshot
-    assert calls == [("openai-codex", str(tmp_path), None)]
+    assert first is snapshots[0]
+    assert second is snapshots[0]
+    assert refreshed_status["account_limits"]["fetched_at"] == "2030-03-17T12:31:00Z"
+    assert after_refresh is snapshots[1]
+    assert calls == [
+        ("openai-codex", str(tmp_path), None),
+        ("openai-codex", str(tmp_path), None),
+    ]
+
+
+def test_account_usage_profile_cache_invalidates_with_credential_pool_cache(monkeypatch, tmp_path):
+    """Credential-pool invalidation should also clear pooled account usage."""
+    import api.providers as providers
+
+    monkeypatch.setattr(profiles, "get_active_hermes_home", lambda: tmp_path)
+    old_cfg, old_mtime = _with_config(model={"provider": "openai-codex"})
+    providers._account_usage_status_cache.clear()
+    calls = []
+    snapshots = [
+        SimpleNamespace(
+            provider="openai-codex",
+            source="usage_api_pool",
+            title="Account limits",
+            plan=None,
+            windows=(),
+            details=(),
+            available=True,
+            unavailable_reason=None,
+            fetched_at=datetime(2030, 3, 17, 12, 30, tzinfo=timezone.utc),
+            pool={"total_credentials": 1, "credentials": []},
+        ),
+        SimpleNamespace(
+            provider="openai-codex",
+            source="usage_api_pool",
+            title="Account limits",
+            plan=None,
+            windows=(),
+            details=(),
+            available=True,
+            unavailable_reason=None,
+            fetched_at=datetime(2030, 3, 17, 12, 31, tzinfo=timezone.utc),
+            pool={"total_credentials": 1, "credentials": []},
+        ),
+    ]
+
+    def fake_fetch(provider, home, api_key=None):
+        calls.append((provider, str(home), api_key))
+        return snapshots[len(calls) - 1]
+
+    monkeypatch.setattr(providers, "_agent_fetch_account_usage_for_home", fake_fetch)
+    try:
+        first = providers._fetch_account_usage_with_profile_context("openai-codex")
+        config.invalidate_credential_pool_cache("openai-codex")
+        second = providers._fetch_account_usage_with_profile_context("openai-codex")
+    finally:
+        providers._account_usage_status_cache.clear()
+        _restore_config(old_cfg, old_mtime)
+
+    assert first is snapshots[0]
+    assert second is snapshots[1]
+    assert calls == [
+        ("openai-codex", str(tmp_path), None),
+        ("openai-codex", str(tmp_path), None),
+    ]
 
 
 
@@ -922,7 +1093,8 @@ def test_provider_quota_route_is_registered():
     """The backend must expose a route for the UI to poll quota status."""
     routes = (ROOT / "api" / "routes.py").read_text(encoding="utf-8")
     assert 'parsed.path == "/api/provider/quota"' in routes
-    assert "get_provider_quota(provider_id)" in routes
+    assert 'query.get("refresh", [""])' in routes
+    assert "get_provider_quota(provider_id, refresh=refresh)" in routes
 
 
 def test_provider_quota_card_is_rendered_in_providers_panel():
@@ -941,6 +1113,8 @@ def test_provider_quota_card_is_rendered_in_providers_panel():
     assert "_buildProviderQuotaPoolBreakdown" in panels
     assert "_providerQuotaPoolShouldDefaultOpen" in panels
     assert "hermes-provider-quota-pool-open" in panels
+    assert "provider-quota-pool-chevron" in panels
+    assert 'aria-hidden="true"' in panels
     assert "count>0&&count<=3" in panels
     assert "status.status==='available'||accountLimits.pool" in panels
     assert "provider-quota-window-detail" in panels
@@ -977,6 +1151,8 @@ def test_provider_quota_styles_exist():
         ".provider-quota-refresh",
         ".provider-quota-checked",
         ".provider-quota-pool",
+        ".provider-quota-pool-chevron",
+        ".provider-quota-pool[open] .provider-quota-pool-chevron",
         ".provider-quota-pool-row",
         ".provider-quota-pool-window",
         ".provider-quota-window-detail",
