@@ -6285,6 +6285,10 @@ function loadMcpServers(){
   }).catch(()=>{list.innerHTML=`<div class="mcp-error-state" style="color:#ef4444;font-size:12px;padding:6px 0">${esc(t('mcp_load_failed'))}</div>`});
 }
 let _mcpToolsCache=[];
+let _mcpToolsMeta={};
+let _mcpToolsPage=1;
+let _mcpToolsPageSize=5;
+const MCP_TOOLS_PAGE_SIZE_OPTIONS=[5,10,20,40];
 function _filterMcpToolsForSearch(tools, query){
   const q=(query||'').trim().toLowerCase();
   if(!q) return Array.isArray(tools)?tools:[];
@@ -6301,16 +6305,56 @@ function _mcpToolSchemaText(schemaSummary){
     return `${p.name}${req}: ${p.type||'unknown'}${desc}`;
   }).join('\n');
 }
-function _renderMcpTools(tools, query){
-  const list=$('mcpToolList');
-  if(!list) return;
-  const filtered=_filterMcpToolsForSearch(tools, query);
-  if(!filtered.length){
-    const key=query?'mcp_tools_no_matches':'mcp_tools_no_tools';
-    list.innerHTML=`<div class="mcp-tool-empty-state" style="color:var(--muted);font-size:12px;padding:6px 0">${esc(t(key))}</div>`;
+function _mcpToolsSummary(total, filtered, page, pages, query){
+  const trimmedQuery=(query||'').trim();
+  if(!filtered){
+    if(trimmedQuery) return t('mcp_tools_summary_no_matches',trimmedQuery,total);
+    return total?t('mcp_tools_summary_none'):'';
+  }
+  const pageSize=_mcpToolsPageSize||5;
+  const start=(page-1)*pageSize+1;
+  const end=Math.min(filtered,page*pageSize);
+  const searchNote=trimmedQuery?t('mcp_tools_summary_matching',trimmedQuery):'';
+  const totalNote=filtered===total?'':t('mcp_tools_summary_total_note',total);
+  return t('mcp_tools_summary_showing',start,end,filtered,searchNote,totalNote,page,pages);
+}
+function _mcpToolPageSizeControl(){
+  const options=MCP_TOOLS_PAGE_SIZE_OPTIONS.map(size=>`<option value="${size}" ${size===_mcpToolsPageSize?'selected':''}>${size}</option>`).join('');
+  return `<label class="mcp-tool-page-size">${esc(t('mcp_tools_page_size_prefix'))} <select aria-label="${esc(t('mcp_tools_per_page_aria'))}" onchange="setMcpToolsPageSize(this.value)">${options}</select> ${esc(t('mcp_tools_page_size_suffix'))}</label>`;
+}
+function _mcpToolsEmptyMessage(query){
+  const base=esc(t(query?'mcp_tools_no_matches':'mcp_tools_no_tools'));
+  const unavailable=Array.isArray(_mcpToolsMeta.unavailable_servers)?_mcpToolsMeta.unavailable_servers:[];
+  if(query||!unavailable.length) return base;
+  return `${base}<br><span class="mcp-tool-empty-detail">${esc(t('mcp_tools_inactive_configured_servers',unavailable.join(', ')))}</span>`;
+}
+function _renderMcpToolPager(filteredCount, page, pages){
+  const pager=$('mcpToolPager');
+  if(!pager) return;
+  if(pages<=1){
+    pager.innerHTML='';
     return;
   }
-  list.innerHTML=filtered.map(tool=>{
+  pager.innerHTML=`<button type="button" class="mcp-tool-page-btn" onclick="setMcpToolsPage(${page-1})" ${page<=1?'disabled':''} aria-label="${esc(t('mcp_tools_previous_page_aria'))}">${esc(t('mcp_tools_previous_page'))}</button>
+    <span class="mcp-tool-page-label">${page} / ${pages}</span>
+    <button type="button" class="mcp-tool-page-btn" onclick="setMcpToolsPage(${page+1})" ${page>=pages?'disabled':''} aria-label="${esc(t('mcp_tools_next_page_aria'))}">${esc(t('mcp_tools_next_page'))}</button>`;
+}
+function _renderMcpTools(tools, query){
+  const list=$('mcpToolList');
+  const toolbar=$('mcpToolToolbar');
+  if(!list) return;
+  const filtered=_filterMcpToolsForSearch(tools, query);
+  const total=Array.isArray(tools)?tools.length:0;
+  const pages=Math.max(1,Math.ceil(filtered.length/_mcpToolsPageSize));
+  _mcpToolsPage=Math.min(Math.max(1,_mcpToolsPage||1),pages);
+  if(toolbar) toolbar.innerHTML=`<span class="mcp-tool-summary">${esc(_mcpToolsSummary(total,filtered.length,_mcpToolsPage,pages,query))}</span>${_mcpToolPageSizeControl()}`;
+  _renderMcpToolPager(filtered.length,_mcpToolsPage,pages);
+  if(!filtered.length){
+    list.innerHTML=`<div class="mcp-tool-empty-state" style="color:var(--muted);font-size:12px;padding:6px 0">${_mcpToolsEmptyMessage(query)}</div>`;
+    return;
+  }
+  const visible=filtered.slice((_mcpToolsPage-1)*_mcpToolsPageSize,_mcpToolsPage*_mcpToolsPageSize);
+  list.innerHTML=visible.map(tool=>{
     const status=tool.status||'unknown';
     const statusBadge=`<span class="mcp-status-badge mcp-status-${esc(status)}">${esc(_mcpStatusLabel(status))}</span>`;
     const schemaText=_mcpToolSchemaText(tool.schema_summary);
@@ -6325,16 +6369,42 @@ function _renderMcpTools(tools, query){
     </div>`;
   }).join('');
 }
-function filterMcpTools(){
+function setMcpToolsPage(page){
+  _mcpToolsPage=page;
   const input=$('mcpToolSearch');
   _renderMcpTools(_mcpToolsCache,input?input.value:'');
+  const list=$('mcpToolList');
+  if(list) list.scrollTop=0;
+}
+function setMcpToolsPageSize(size){
+  const next=Number(size);
+  if(!MCP_TOOLS_PAGE_SIZE_OPTIONS.includes(next)) return;
+  _mcpToolsPageSize=next;
+  _mcpToolsPage=1;
+  const input=$('mcpToolSearch');
+  _renderMcpTools(_mcpToolsCache,input?input.value:'');
+  const list=$('mcpToolList');
+  if(list) list.scrollTop=0;
+}
+function filterMcpTools(){
+  _mcpToolsPage=1;
+  const input=$('mcpToolSearch');
+  _renderMcpTools(_mcpToolsCache,input?input.value:'');
+  const list=$('mcpToolList');
+  if(list) list.scrollTop=0;
 }
 function loadMcpTools(){
   const list=$('mcpToolList');
+  const toolbar=$('mcpToolToolbar');
+  const pager=$('mcpToolPager');
   if(!list) return;
+  if(toolbar) toolbar.textContent='';
+  if(pager) pager.innerHTML='';
   list.innerHTML=`<div style="color:var(--muted);font-size:12px;padding:6px 0">${esc(t('loading'))}</div>`;
   api('/api/mcp/tools').then(r=>{
     _mcpToolsCache=(r&&Array.isArray(r.tools))?r.tools:[];
+    _mcpToolsMeta=r||{};
+    _mcpToolsPage=1;
     filterMcpTools();
   }).catch(()=>{list.innerHTML=`<div class="mcp-tool-error-state" style="color:#ef4444;font-size:12px;padding:6px 0">${esc(t('mcp_tools_load_failed'))}</div>`});
 }
