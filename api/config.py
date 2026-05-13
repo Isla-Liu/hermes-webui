@@ -2333,6 +2333,8 @@ def invalidate_credential_pool_cache(provider_id: str):
         _CREDENTIAL_POOL_CACHE.pop(provider_id, None)
         _CREDENTIAL_POOL_CACHE.pop(_resolve_provider_alias(provider_id), None)
     try:
+        # api.providers imports from api.config; keep this lazy to avoid
+        # import-cycle/module-initialization issues.
         from api.providers import invalidate_account_usage_status_cache
 
         invalidate_account_usage_status_cache(provider_id)

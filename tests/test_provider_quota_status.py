@@ -886,6 +886,54 @@ def test_account_usage_profile_fetch_uses_short_lived_cache(monkeypatch, tmp_pat
     ]
 
 
+def test_account_usage_forced_refresh_failure_preserves_warm_snapshot(monkeypatch, tmp_path):
+    """A failed manual refresh should not discard the last usable account snapshot."""
+    import api.providers as providers
+
+    monkeypatch.setattr(profiles, "get_active_hermes_home", lambda: tmp_path)
+    old_cfg, old_mtime = _with_config(model={"provider": "openai-codex"})
+    providers._account_usage_status_cache.clear()
+    calls = []
+    good_snapshot = SimpleNamespace(
+        provider="openai-codex",
+        source="usage_api_pool",
+        title="Account limits",
+        plan=None,
+        windows=(),
+        details=(),
+        available=True,
+        unavailable_reason=None,
+        fetched_at=datetime(2030, 3, 17, 12, 30, tzinfo=timezone.utc),
+        pool={"total_credentials": 1, "credentials": []},
+    )
+
+    def fake_fetch(provider, home, api_key=None):
+        calls.append((provider, str(home), api_key))
+        return good_snapshot if len(calls) == 1 else None
+
+    monkeypatch.setattr(providers, "_agent_fetch_account_usage_for_home", fake_fetch)
+    try:
+        first = providers._fetch_account_usage_with_profile_context("openai-codex")
+        refreshed = providers._fetch_account_usage_with_profile_context(
+            "openai-codex",
+            refresh=True,
+        )
+        after_refresh_failure = providers._fetch_account_usage_with_profile_context(
+            "openai-codex",
+        )
+    finally:
+        providers._account_usage_status_cache.clear()
+        _restore_config(old_cfg, old_mtime)
+
+    assert first is good_snapshot
+    assert refreshed is None
+    assert after_refresh_failure is good_snapshot
+    assert calls == [
+        ("openai-codex", str(tmp_path), None),
+        ("openai-codex", str(tmp_path), None),
+    ]
+
+
 def test_account_usage_profile_cache_invalidates_with_credential_pool_cache(monkeypatch, tmp_path):
     """Credential-pool invalidation should also clear pooled account usage."""
     import api.providers as providers

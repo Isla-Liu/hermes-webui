@@ -1176,9 +1176,18 @@ def invalidate_account_usage_status_cache(provider_id: str | None = None) -> Non
                 _account_usage_status_cache.pop(key, None)
 
 
-def _set_cached_account_usage(cache_key: tuple[str, str, str], snapshot: Any) -> None:
+def _set_cached_account_usage(
+    cache_key: tuple[str, str, str],
+    snapshot: Any,
+    *,
+    preserve_non_none: bool = False,
+) -> None:
     now = time.monotonic()
     with _account_usage_status_cache_lock:
+        if preserve_non_none and snapshot is None:
+            cached = _account_usage_status_cache.get(cache_key)
+            if cached is not None and cached[1] is not None:
+                return
         _account_usage_status_cache[cache_key] = (now, snapshot)
         expired = [
             key for key, (fetched_at, _snapshot) in _account_usage_status_cache.items()
@@ -1269,11 +1278,11 @@ def _fetch_account_usage_with_profile_context(provider: str, *, refresh: bool = 
                 home,
                 api_key=api_key,
             )
-            _set_cached_account_usage(cache_key, snapshot)
+            _set_cached_account_usage(cache_key, snapshot, preserve_non_none=refresh)
             return snapshot
     except Exception:
         logger.debug("Failed to fetch account usage for %s", provider, exc_info=True)
-        _set_cached_account_usage(cache_key, None)
+        _set_cached_account_usage(cache_key, None, preserve_non_none=refresh)
         return None
 
 
