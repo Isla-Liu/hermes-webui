@@ -654,10 +654,7 @@ async function loadSession(sid){
       updateQueueBadge(sid);
       syncTopbar();renderMessages();
       if(typeof resumeManualCompressionForSession==='function') resumeManualCompressionForSession(sid);
-      // Kick off loadDir first (issues network requests), then highlight code.
-      // The fetch is dispatched before the CPU-bound Prism pass begins.
       const _dirP=loadDir('.');
-      highlightCode();
       await _dirP;
     }
   }
