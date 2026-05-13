@@ -3964,8 +3964,8 @@ function _updateSummarySignature(info){
 }
 function _updateSummaryButtonLabel(target,data){
   const labels=target.key==='webui'
-    ? {generate:'Generate WebUI summary',view:'View generated WebUI summary',regenerate:'Re-generate WebUI summary'}
-    : {generate:'Generate Agent summary',view:'View generated Agent summary',regenerate:'Re-generate Agent summary'};
+    ? {generate:'Generate WebUI update summary',view:'View generated WebUI update summary',regenerate:'Re-generate WebUI update summary'}
+    : {generate:'Generate Agent update summary',view:'View generated Agent update summary',regenerate:'Re-generate Agent update summary'};
   const cache=_loadStoredUpdateSummaries()[target.key];
   const signature=_updateSummarySignature(data&&data[target.key]);
   if(cache&&cache.signature===signature&&cache.payload) return labels.view;

@@ -763,12 +763,12 @@ class TestWhatsNewSummaryToggle:
         assert 'updateSummaryDiffLinks' in src
         assert 'Regular diff comparison' in src
         assert 'updateSummarySections' in src
-        assert 'Generate WebUI summary' in src
-        assert 'Generate Agent summary' in src
-        assert 'View generated WebUI summary' in src
-        assert 'View generated Agent summary' in src
-        assert 'Re-generate WebUI summary' in src
-        assert 'Re-generate Agent summary' in src
+        assert 'Generate WebUI update summary' in src
+        assert 'Generate Agent update summary' in src
+        assert 'View generated WebUI update summary' in src
+        assert 'View generated Agent update summary' in src
+        assert 'Re-generate WebUI update summary' in src
+        assert 'Re-generate Agent update summary' in src
         assert 'window._whatsNewGeneratedSummaries' in src
         assert 'sessionStorage' in src
         assert 'hermes-whats-new-generated-summaries' in src
