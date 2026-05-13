@@ -6383,8 +6383,12 @@ function appendThinking(text=''){
       if(anchor) anchor.insertAdjacentElement('afterend', row);
       else blocks.appendChild(row);
     }
-    row.className=(text&&String(text).trim())?'assistant-segment thinking-card-row':'assistant-segment';
-    row.innerHTML=_thinkingMarkup(text);
+    const clean=_sanitizeThinkingDisplayText(text);
+    const hasClean=!!String(clean||'').trim();
+    row.className=hasClean?'assistant-segment thinking-card-row':'assistant-segment';
+    const pre=row.querySelector('.thinking-card-body pre');
+    if(pre&&hasClean) pre.textContent=String(clean).trim();
+    else row.innerHTML=_thinkingMarkup(text);
     scrollIfPinned();
     // Auto-scroll the thinking card body to bottom if the user is watching
     // (scroll pinned). If the user scrolled up to read history, leave it alone.
@@ -6413,7 +6417,11 @@ function appendThinking(text=''){
     row.setAttribute('data-thinking-active','1');
     body.insertBefore(row, body.firstChild);
   }
-  row.innerHTML=_thinkingMarkup(text);
+  const clean=_sanitizeThinkingDisplayText(text);
+  const hasClean=!!String(clean||'').trim();
+  const pre=row.querySelector('.thinking-card-body pre');
+  if(pre&&hasClean) pre.textContent=String(clean).trim();
+  else row.innerHTML=_thinkingMarkup(text);
   _syncToolCallGroupSummary(group);
   scrollIfPinned();
   if(_scrollPinned){
