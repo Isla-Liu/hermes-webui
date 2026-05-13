@@ -1560,6 +1560,14 @@ def _is_messaging_session_record(session) -> bool:
 
 
 def _session_requires_cli_metadata_lookup(session) -> bool:
+    """Return True when a sidecar/session row still needs CLI metadata.
+
+    Legacy imported sidecars may predate the ``read_only`` field and therefore
+    load with ``read_only=False``. They still persist ``is_cli_session`` and/or
+    source metadata from import time, so those markers intentionally keep them
+    on the CLI lookup path while ordinary WebUI-native sessions take the fast
+    path.
+    """
     if not session:
         return False
 
