@@ -440,6 +440,7 @@ const LOCALES = {
     session_worktree_remove_status_failed: 'Failed to read worktree status: ',
     session_worktree_remove_locked_by_stream: 'Cannot remove — an active streaming session is using this worktree.',
     session_worktree_remove_locked_by_terminal: 'Cannot remove — an active terminal session is using this worktree.',
+    session_worktree_remove_unsafe_blocked: 'Resolve local changes or unpushed commits before removing this worktree.',
     session_worktree_remove_dirty_warning: 'WARNING: This worktree has uncommitted changes which will be lost.',
     session_worktree_remove_untracked_warning: (count) => `${count} untracked file(s) will be permanently deleted.`,
     session_worktree_remove_ahead_warning: (ahead) => `${ahead} unpushed commit(s) will be lost.`,

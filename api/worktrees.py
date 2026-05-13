@@ -236,7 +236,7 @@ def remove_worktree_for_session(session, *, force: bool = False) -> dict:
     if status["locked_by_terminal"]:
         raise ValueError("Worktree is locked by an active terminal session")
 
-    # Guard: dirty / untracked files without force
+    # Guard: local changes and unpushed commits without explicit force.
     if status["dirty"] and not force:
         raise ValueError(
             "Worktree has uncommitted changes. Use force=true to override."
@@ -251,17 +251,26 @@ def remove_worktree_for_session(session, *, force: bool = False) -> dict:
                 f"Worktree has {status['untracked_count']} untracked file(s). "
                 "Use force=true to override."
             )
+    ahead = int((status.get("ahead_behind") or {}).get("ahead") or 0)
+    if ahead > 0:
+        if force:
+            warnings.append(f"{ahead} unpushed commit(s) will be removed.")
+        else:
+            raise ValueError(
+                f"Worktree has {ahead} unpushed commit(s). "
+                "Use force=true to override."
+            )
 
     # Remove the worktree — must run from the repo root, not the worktree dir
     repo_root = getattr(session, "worktree_repo_root", None)
     if not repo_root:
         raise ValueError("Session missing worktree_repo_root")
     try:
-        result = _run_git(
-            ["worktree", "remove", "--force", str(worktree_path)],
-            str(repo_root),
-            timeout=10,
-        )
+        remove_args = ["worktree", "remove"]
+        if force:
+            remove_args.append("--force")
+        remove_args.append(str(worktree_path))
+        result = _run_git(remove_args, str(repo_root), timeout=10)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ValueError(f"Failed to remove worktree: {exc}") from exc
 

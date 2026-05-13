@@ -3201,6 +3201,16 @@ async function removeWorktree(session){
     if(status.ahead_behind&&status.ahead_behind.ahead>0){
       details+='\n'+t('session_worktree_remove_ahead_warning',status.ahead_behind.ahead);
     }
+    if(status.dirty||status.untracked_count>0||(status.ahead_behind&&status.ahead_behind.ahead>0)){
+      showToast(t('session_worktree_remove_failed')+t('session_worktree_remove_unsafe_blocked'),0,'error');
+      await showConfirmDialog({
+        message:details,
+        confirmLabel:t('dialog_confirm_btn'),
+        danger:true,
+        focusCancel:true
+      });
+      return;
+    }
   }
   const ok=await showConfirmDialog({
     message:details,
@@ -3208,11 +3218,10 @@ async function removeWorktree(session){
     danger:true
   });
   if(!ok)return;
-  const force=(status.dirty||status.untracked_count>0);
   try{
     const result=await api('/api/session/worktree/remove',{
       method:'POST',
-      body:JSON.stringify({session_id:session.session_id, force:force})
+      body:JSON.stringify({session_id:session.session_id, force:false})
     });
     const warn=result.warnings&&result.warnings.length?(' '+result.warnings.join(' ')):'';
     showToast(t('session_worktree_removed')+warn);
