@@ -11,6 +11,7 @@ import logging
 import os
 import secrets
 import tempfile
+import threading
 import time
 
 from api.config import STATE_DIR, load_settings
@@ -210,14 +211,45 @@ def _hash_password(password):
     return dk.hex()
 
 
+_AUTH_HASH_LOCK = threading.Lock()
+_AUTH_HASH_COMPUTED: bool = False
+_AUTH_HASH_CACHE: str | None = None
+
+
 def get_password_hash() -> str | None:
     """Return the active password hash, or None if auth is disabled.
-    Priority: env var > settings.json."""
-    env_pw = os.getenv('HERMES_WEBUI_PASSWORD', '').strip()
-    if env_pw:
-        return _hash_password(env_pw)
-    settings = load_settings()
-    return settings.get('password_hash') or None
+    Priority: env var > settings.json.
+
+    The hash is computed once and cached for the lifetime of the process.
+    PBKDF2-600k takes ~1 s and is called on nearly every HTTP request via
+    check_auth → is_auth_enabled, so caching avoids wasting a full second
+    of CPU per request after the first one.
+
+    Thread-safe: double-checked locking ensures that under a burst of
+    concurrent requests only one thread computes PBKDF2, while the fast
+    path (after initialisation) requires zero locks.
+    """
+    global _AUTH_HASH_COMPUTED, _AUTH_HASH_CACHE
+
+    # Fast path — no lock needed once cache is populated.
+    if _AUTH_HASH_COMPUTED:
+        return _AUTH_HASH_CACHE
+
+    with _AUTH_HASH_LOCK:
+        # Re-check inside lock — another thread may have populated while
+        # we were waiting to acquire.
+        if _AUTH_HASH_COMPUTED:
+            return _AUTH_HASH_CACHE
+
+        env_pw = os.getenv('HERMES_WEBUI_PASSWORD', '').strip()
+        if env_pw:
+            result = _hash_password(env_pw)
+        else:
+            result = load_settings().get('password_hash') or None
+
+        _AUTH_HASH_CACHE = result
+        _AUTH_HASH_COMPUTED = True
+        return result
 
 
 def is_auth_enabled() -> bool:
