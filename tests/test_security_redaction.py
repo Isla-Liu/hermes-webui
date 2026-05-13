@@ -188,6 +188,52 @@ def test_redact_text_prefilter_covers_known_prefixed_credentials(prefix, suffix)
     assert token not in result
 
 
+@pytest.mark.parametrize("text,must_be_redacted", [
+    # OAuth callback URL with `code=` query param — agent's
+    # _redact_url_query_params should fire
+    ("https://example.com/callback?code=AUTH_OPAQUE_VALUE", "AUTH_OPAQUE_VALUE"),
+    # URL userinfo (user:password embedded in scheme://) — agent's
+    # _redact_url_userinfo should fire
+    ("https://admin:supersecretpassword@api.example.com/v1", "supersecretpassword"),
+    # Signed-URL sensitive query param
+    ("https://cdn.example.com/file.zip?signature=ABCDEFGHIJKL", "ABCDEFGHIJKL"),
+    # Session-token query param
+    ("https://example.com/dashboard?session=xyzABC999DEF", "xyzABC999DEF"),
+    # WebSocket URL with token query param
+    ("wss://example.com/ws?token=jwt_ABCDEFGHIJ", "jwt_ABCDEFGHIJ"),
+])
+def test_redact_text_prefilter_covers_url_userinfo_and_sensitive_query_params(text, must_be_redacted):
+    """Stage-348 Opus follow-up to PR #2171: the credential prefilter must
+    catch URL userinfo and sensitive query params so they still reach the
+    hard agent redactor instead of bypassing it.
+
+    Pre-fix, the prefilter only listed specific DB scheme prefixes
+    (postgres://, mysql://, etc.) and a closed set of form keys, so OAuth
+    callback URLs pasted into chat could pass through to the response
+    verbatim. The fix adds the generic "://" marker so http(s)/ws(s)/ftp
+    URLs always route to the hard redactor.
+    """
+    import api.helpers as helpers
+
+    result = helpers._redact_text(text, _enabled=True)
+
+    assert must_be_redacted not in result, (
+        f"sensitive substring {must_be_redacted!r} leaked through prefilter: "
+        f"result was {result!r}"
+    )
+
+
+def test_redact_text_prefilter_admits_plain_urls_without_sensitive_params():
+    """Stage-348 follow-up companion: plain URLs with no sensitive params
+    still pass through unchanged (the `://` marker only routes to the hard
+    redactor; the redactor itself only mutates sensitive substrings)."""
+    import api.helpers as helpers
+
+    plain = "Check the docs at https://example.com/guide.html for details."
+    result = helpers._redact_text(plain, _enabled=True)
+    assert result == plain
+
+
 def test_redact_value_works_with_legacy_agent_redact_signature(monkeypatch):
     """_redact_text must tolerate older redact_sensitive_text(text) signatures."""
     fake_agent = types.ModuleType("agent")

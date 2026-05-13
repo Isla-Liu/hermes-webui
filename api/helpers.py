@@ -256,6 +256,7 @@ _SENSITIVE_LOWER_MARKERS = (
     "mongodb://",
     "redis://",
     "amqp://",
+    "://",  # stage-348 Opus SHOULD-FIX: catch http(s)/ws(s)/ftp URL userinfo + sensitive query params (#2171 follow-up)
     "access_token",
     "refresh_token",
     "id_token",

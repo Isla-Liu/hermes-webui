@@ -24,6 +24,10 @@
 
 - **PR #2190** by @xz-dev — Thinking-card reasoning updates now update text in place during reasoning deltas instead of rebuilding the card DOM on every append. Preserves expand state and scroll position across reasoning streaming, so users reading a long reasoning block don't get bounced to the top on every chunk. When a thinking card exists, the update path now sets `pre.textContent` directly; full-rebuild path only fires when no existing card is present.
 
+### Stage-348 maintainer fixes
+
+- **`api/helpers.py:_SENSITIVE_LOWER_MARKERS` — add `"://"` URL marker** — Opus SHOULD-FIX-pre-merge on PR #2171's credential prefilter. The prefilter listed only specific DB scheme prefixes (`postgres://`, `mysql://`, `mongodb://`, `redis://`, `amqp://`) and a closed set of form keys (`token=`, `secret=`, `password=`, `authorization=`, `key=`), so OAuth callback URLs (`https://example.com/callback?code=AUTH_OPAQUE`), URL userinfo (`https://admin:supersecret@api.example.com/v1`), and signed-URL query params (`?signature=...`, `?session=...`) bypassed the hard agent redactor entirely — defeating the "WebUI API responses are a hard safety boundary" comment at `helpers.py:189`. Adding the generic `"://"` marker routes every http(s)/ws(s)/ftp URL to the hard redactor (which then selectively redacts only the sensitive substrings — plain `https://example.com/guide.html` URLs still pass through unchanged). Regression-pinned with 5 new parametric cases in `tests/test_security_redaction.py` (`test_redact_text_prefilter_covers_url_userinfo_and_sensitive_query_params`) covering OAuth code, URL userinfo, signed-URL signature, session query param, and WebSocket token — plus a negative-case `test_redact_text_prefilter_admits_plain_urls_without_sensitive_params` confirming the redactor doesn't over-redact plain URLs. Verified by reverting the fix locally: all 5 sensitive-URL cases fail; restoring the fix: all 5 pass. ~6 LOC code + ~50 LOC test.
+
 ## [v0.51.54] — 2026-05-13 — Release AD (stage-347 — singleton self-built — NVIDIA NIM prefix preservation fix #2179)
 
 ### Fixed
