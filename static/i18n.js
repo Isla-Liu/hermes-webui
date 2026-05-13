@@ -686,7 +686,10 @@ const LOCALES = {
     workspace_desc: 'Add and switch workspaces for your sessions.',
     session_meta_messages: (n) => `${n} msg${n === 1 ? '' : 's'}`,
     session_meta_children: (n) => `${n} child${n === 1 ? '' : 'ren'}`,
-    session_meta_segments: (n) => `${n} segment${n === 1 ? '' : 's'}`,
+    // Softened label: avoids exposing the technical internal term
+    // 'segment' in the default visible badge. User-facing copy remains
+    // translatable for locales that prefer a different wording. (#2155)
+    session_meta_segments: (n) => `${n} prior turn${n === 1 ? '' : 's'}`,
     session_lineage_segment_untitled: 'Untitled segment',
     session_lineage_segment_open: 'Open lineage segment',
     new_profile: 'New profile',
