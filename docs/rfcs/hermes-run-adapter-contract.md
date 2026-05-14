@@ -199,8 +199,10 @@ diagnostic or manual validation plan.
 
 | Behavior | Acceptance criterion | Why it matters | First slice that must prove it |
 |---|---|---|---|
-| Restart/reconnect mid-stream | start a run, restart only WebUI, reload browser, replay/catch up from cursor, final state matches | proves active work no longer depends only on WebUI process memory | journal/replay slice |
+| Journal replay after refresh/reconnect | reconnect or restart after events have been journaled can replay from cursor without duplicate transcript/tool/reasoning state | proves the browser contract is replayable and duplicate-safe | journal/replay slice |
 | Terminal replay | completed/failed/cancelled runs replay terminal state and do not duplicate transcript content | prevents stale spinner and duplicate-message regressions | journal/replay slice |
+| Interrupted/stale run diagnostics | if WebUI restarts while execution is still owned by the WebUI process, replay shows the last journaled state and a clear interrupted/stale diagnostic instead of pretending the run kept executing | keeps slice 1 honest before a runner exists | journal/replay slice |
+| Execution survives WebUI restart | active execution outlives the main WebUI process, reconnect discovers the active run, ordered replay catches up, and controls such as cancel still work | proves execution ownership actually moved out of the request process | runner/sidecar or external-runtime slice |
 | Cancel during tool call | cancel emits one terminal cancelled state and no stale writeback | catches historical stream ownership races | control migration slice |
 | Cancel during reasoning | partial/reasoning content is preserved cleanly and final state is not provider-error | catches cancellation classification regressions | control migration slice |
 | Approval request/response | approval survives observation, browser response reaches runtime, result is replayable | approval callbacks are cross-cutting and easy to orphan | approval migration slice |
@@ -255,13 +257,15 @@ Revert path:
 Success criterion:
 
 1. Start a non-trivial WebUI run.
-2. Restart only `hermes-webui` while the run is active or shortly after terminal
-   state.
-3. Reload the browser/session.
-4. Rediscover the run from journal metadata.
-5. Replay from cursor without duplicate visible transcript content.
-6. Render the same token/reasoning/tool/status/terminal state the workbench would
-   have rendered without the restart.
+2. Refresh/reconnect the browser, or restart WebUI after events have already been
+   journaled.
+3. Rediscover the run from journal metadata.
+4. Replay from cursor without duplicate visible transcript content.
+5. Render the same already-journaled token/reasoning/tool/status/terminal state
+   the workbench would have rendered without the reconnect.
+6. If WebUI restarted while execution was still owned by the WebUI process, show
+   an explicit interrupted/stale diagnostic rather than claiming the active run
+   kept executing.
 
 ### Slice 2: Adapter interface over the journaled legacy path
 
@@ -303,19 +307,39 @@ Scope:
 
 Revert path: disable runner backend and fall back to journaled legacy backend.
 
-## First Meaningful Success Criterion
+## First Meaningful Success Criteria
 
-The first meaningful milestone is not "basic chat streams through a new module."
-It is:
+The first meaningful milestones are deliberately split.
+
+### Journal / Replay Gate
+
+This gate belongs to Slice 1. It does not prove active execution survives a WebUI
+process restart, because execution is still owned by the WebUI process in this
+slice.
+
+It proves:
+
+1. A WebUI run emits append-only journal events with stable cursors.
+2. Browser refresh/reconnect can replay already-journaled events from cursor.
+3. Terminal `done`, `error`, or `cancelled` state replays without duplicate
+   transcript content.
+4. Tool/reasoning/status state can be reconstructed from replayed journal events.
+5. If WebUI restarts before execution ownership has moved out of process, the UI
+   can show a clear interrupted/stale diagnostic for the last journaled run state.
+
+### Execution-Survives-WebUI-Restart Gate
+
+This stronger gate belongs to the runner/sidecar or external-runtime slice, not
+Slice 1. It proves execution ownership has actually moved out of the main WebUI
+request process:
 
 1. Start a long-running run from WebUI.
 2. Restart only `hermes-webui`.
-3. Keep the active run observable through durable journal state.
+3. Keep the active run executing outside the restarted WebUI process.
 4. Reload the browser/session.
-5. Replay/catch up from cursor.
+5. Rediscover the active run and replay/catch up from cursor.
 6. Preserve the rendered workbench state without duplicate transcript content.
-7. If the run is still active, cancellation still works through the existing
-   control path until the control migration slice replaces it.
+7. If the run is still active, cancellation still works.
 
 If this works without moving runtime ownership into a new pile of process-local
 globals, the architecture is moving in the right direction.
