@@ -22,6 +22,8 @@
 
 - **PR #2234** by @Jordan-SkyLF (post-v0.51.61 rebase) — Update summary category handling now preserves all explicit `Notice:` and `Worth knowing:` bullets the summarizer returns instead of forcing a three-item split. Distinct categories are deduplicated against each other so the same content can't appear twice across sections. Keeps the existing fallback grouping when the model doesn't return explicit prefixes. The summary panel becomes scrollable when longer summaries need more vertical room. Caps large update-summary commit input to the latest 24 commit subjects and discloses that scope in the generated summary while keeping the full comparison link available.
 
+- **PR #2234** by @Jordan-SkyLF (follow-up to the v0.51.62 category refinement) — Update summary generation now prefers the documented `auxiliary.compression` text-model slot before falling back to the main configured model, avoiding a WebUI-only `auxiliary.update_summary` magic key that would not appear in Hermes Agent setup/config documentation.
+
 ### Added
 
 - **PR #2238** by @franksong2702 (fixes #2231) — Phone-width layouts (≤640px) keep the hamburger drawer entry pattern, but the drawer now lays out `.sidebar-nav` as a vertical 52px strip with stable 44px touch targets and a left-edge selection indicator instead of a cramped horizontal icon row. PWA chrome alignment: `theme-color` meta tag now follows the app chrome `--sidebar` color instead of the chat background `--bg`, so iOS Safari / PWA status bars visibly match the titlebar/sidebar. Phone composer also reserves the bottom safe area so it is not clipped by rounded corners or the home indicator. Before/after screenshots shipped under `docs/pr-media/2231/`.
