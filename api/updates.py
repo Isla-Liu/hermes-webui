@@ -406,30 +406,38 @@ def _worth_knowing_bullets(details: list[dict]) -> list[str]:
     ]
     if len(targets) > 1:
         return ['This summary combines updates from ' + ' and '.join(targets) + '.']
-    if targets:
-        return ['This summary covers ' + targets[0] + '.']
-    return ['No update details were available to summarize.']
+    return []
 
 
 def _format_update_summary_sections(summary_text: str, details: list[dict]) -> tuple[list[dict], str]:
     bullets = _summary_bullets_from_text(summary_text, fallback_items=_fallback_update_bullets(details))
     if len(bullets) > 1:
         notice_items = bullets[:3]
-        worth_items = bullets[3:] or bullets[1:]
+        worth_items = bullets[3:]
     else:
         notice_items = bullets
         worth_items = []
-    worth_items = worth_items[:2] or _worth_knowing_bullets(details)
+    notice_keys = {item.lower() for item in notice_items}
+    worth_items = [item for item in worth_items if item.lower() not in notice_keys]
+    if not worth_items:
+        worth_items = [
+            item for item in _worth_knowing_bullets(details)
+            if item.lower() not in notice_keys
+        ]
+    worth_items = worth_items[:2]
     sections = [
         {
             'title': "What you'll notice",
             'items': notice_items,
         },
-        {
-            'title': 'Worth knowing',
-            'items': worth_items,
-        },
     ]
+    if worth_items:
+        sections.append(
+            {
+                'title': 'Worth knowing',
+                'items': worth_items,
+            }
+        )
     lines = []
     for section in sections:
         lines.append(section['title'])

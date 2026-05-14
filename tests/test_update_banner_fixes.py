@@ -816,6 +816,65 @@ class TestWhatsNewSummaryToggle:
         assert 'Worth knowing' in result['summary']
         assert '- The settings panel is easier to understand.' in result['summary']
 
+    def test_update_summary_deduplicates_notice_items_from_worth_knowing(self):
+        from api.updates import summarize_update_payload
+
+        payload = {
+            'webui': {'behind': 2, 'current_sha': 'abc', 'latest_sha': 'def', 'compare_url': 'https://example.test/webui'},
+        }
+        result = summarize_update_payload(
+            payload,
+            llm_callback=lambda _system, _prompt: 'The settings panel is easier to understand. Update prompts are clearer.',
+            use_cache=False,
+        )
+        notice_items = result['summary_sections'][0]['items']
+        worth_section = next((section for section in result['summary_sections'] if section['title'] == 'Worth knowing'), None)
+
+        assert notice_items == [
+            'The settings panel is easier to understand.',
+            'Update prompts are clearer.',
+        ]
+        assert worth_section is None
+        assert 'Worth knowing' not in result['summary']
+        assert 'This summary covers WebUI' not in result['summary']
+
+    def test_update_summary_deduplicates_repeated_agent_summary_bullets(self):
+        from api.updates import summarize_update_payload
+
+        duplicate_menu_item = (
+            'The `hermes tools` menus should open noticeably faster, especially when checking available tools or auth state.'
+        )
+        duplicate_quality_item = (
+            'These updates are small quality-of-life improvements focused on smoother messaging and less waiting in the CLI.'
+        )
+        result = summarize_update_payload(
+            {
+                'agent': {
+                    'behind': 2,
+                    'current_sha': 'abc',
+                    'latest_sha': 'def',
+                    'compare_url': 'https://example.test/agent',
+                },
+            },
+            llm_callback=lambda _system, _prompt: '\n'.join(
+                [
+                    'Slack thread commands now also work with `!cmd`, giving you an easier fallback when slash commands are awkward or unavailable.',
+                    duplicate_menu_item,
+                    duplicate_quality_item,
+                    duplicate_menu_item,
+                    duplicate_quality_item,
+                ]
+            ),
+            use_cache=False,
+        )
+        sections = {section['title']: section['items'] for section in result['summary_sections']}
+
+        assert duplicate_menu_item in sections["What you'll notice"]
+        assert duplicate_quality_item in sections["What you'll notice"]
+        assert 'Worth knowing' not in sections
+        assert result['summary'].count(duplicate_menu_item) == 1
+        assert result['summary'].count(duplicate_quality_item) == 1
+
     def test_update_summary_cache_reuses_same_update_summary(self):
         import api.updates as upd
 
