@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- **PR #2222** by @franksong2702 — Settings → Appearance now wraps the "Load older messages while scrolling up" checkbox in its own label instead of leaving it after the session-jump description with a stray closing label. This keeps the endless-scroll setting layout stable when Appearance controls such as font size are changed.
+
 - **PR #2217** by @franksong2702 (refs #2215 Fix B) — Drops the leftover `re.MULTILINE` flag from the "the user is asking" pre-amble strip pattern in `api/streaming.py:695`. PR #2213 removed `re.MULTILINE` from the three sibling wrapper-strip patterns (`<think>`, MiniMax, Gemma) but missed this one instance. With `re.MULTILINE`, `^` matched the start of any line in the response, so a mid-response line that legitimately started with "The user is asking us to wait" could be stripped silently. Now the pattern only matches when the entire response leads with that wrapper, consistent with the other strips. One-flag, two-character change + regression test pinning the new behavior.
 
 - **PR #2216** by @franksong2702 (closes #2215 Fix A) — Caps the `_summary_cache` for per-target update summaries with an `OrderedDict`-backed LRU bounded at 16 entries. Pre-fix the cache was an unbounded plain dict introduced in PR #2207; cardinality is small in practice (0-2 active update ranges per server lifetime) so this is defensive future-proofing rather than a leak being hit today. Cache hits call `move_to_end()` to refresh recency; cache writes call `popitem(last=False)` to evict the oldest entry when at capacity. Overwrites of existing keys bypass eviction. Both operations run under the existing `_cache_lock` for thread safety. With Fix A and Fix B both shipped, issue #2215 is closed.
