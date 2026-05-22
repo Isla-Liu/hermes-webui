@@ -1525,7 +1525,12 @@ def _resolve_compatible_session_model_state(
         # qualifier — qualified strings require the catalog to decide whether
         # the qualifier matches the active provider (see slow path below).
         bare_model, explicit_provider = _split_provider_qualified_model(model)
-        if not explicit_provider:
+        model_prefix = model.split("/", 1)[0].strip().lower() if "/" in model else ""
+        stale_codex_openai_slash_id = (
+            requested_provider == "openai-codex"
+            and model_prefix == "openai"
+        )
+        if not explicit_provider and not stale_codex_openai_slash_id:
             return model, requested_provider, False
 
     # Default (human chat/start) path calls get_available_models() with NO
@@ -1553,7 +1558,14 @@ def _resolve_compatible_session_model_state(
 
     bare_for_context, explicit_provider = _split_provider_qualified_model(model)
     if requested_provider and not explicit_provider:
-        return model, requested_provider, False
+        model_prefix = model.split("/", 1)[0].strip().lower() if "/" in model else ""
+        stale_codex_openai_slash_id = (
+            raw_active_provider == "openai-codex"
+            and requested_provider == "openai-codex"
+            and model_prefix == "openai"
+        )
+        if not stale_codex_openai_slash_id:
+            return model, requested_provider, False
 
     if model.startswith("@") and ":" in model:
         provider_raw = explicit_provider or ""
@@ -1663,7 +1675,7 @@ def _resolve_compatible_session_model_state(
     if (
         raw_active_provider == "openai-codex"
         and model_provider == "openai"
-        and requested_provider is None
+        and requested_provider in {None, "openai-codex"}
         and default_model
     ):
         # Persist provider_context = "openai-codex" unconditionally on this
@@ -3337,6 +3349,13 @@ def _plugin_visibility_payload(manager=None) -> dict:
     four lifecycle hook names called out by the Settings visibility MVP. It
     never includes plugin source paths, callback names, callback reprs, or raw
     load errors because those can contain private filesystem details.
+
+    Exclusive plugins (e.g. memory providers) are activated through their
+    category's ``<category>.provider`` config, not through ``plugins.enabled``.
+    Their ``loaded.enabled`` stays False by design and they register hooks
+    outside the four visibility hooks below. The payload surfaces ``kind``
+    and ``activation`` so the panel can render them distinctly instead of
+    mislabeling them as "Disabled" with no hooks (issue #2659).
     """
     manager = manager or _get_plugin_manager_for_visibility()
     manager.discover_and_load(force=False)
@@ -3354,6 +3373,14 @@ def _plugin_visibility_payload(manager=None) -> dict:
         name = _clean_plugin_visibility_text(getattr(manifest, "name", "") or plugin_key, limit=120)
         version = _clean_plugin_visibility_text(getattr(manifest, "version", ""), limit=80)
         description = _clean_plugin_visibility_text(getattr(manifest, "description", ""), limit=280)
+        kind = _clean_plugin_visibility_text(getattr(manifest, "kind", "") or "standalone", limit=40)
+        enabled_flag = bool(getattr(loaded, "enabled", False))
+        if kind == "exclusive":
+            activation = "exclusive"
+        elif kind == "model-provider" and enabled_flag:
+            activation = "provider"
+        else:
+            activation = "enabled" if enabled_flag else "disabled"
         registered = []
         for hook in list(getattr(manifest, "provides_hooks", []) or []) + list(getattr(loaded, "hooks_registered", []) or []):
             hook_name = str(hook or "").strip()
@@ -3365,7 +3392,11 @@ def _plugin_visibility_payload(manager=None) -> dict:
             "key": plugin_key or name,
             "version": version,
             "description": description,
-            "enabled": bool(getattr(loaded, "enabled", False)),
+            # `enabled` is preserved for back-compat with older WebUI clients
+            # that key off it directly. New clients should prefer `activation`.
+            "enabled": enabled_flag,
+            "kind": kind,
+            "activation": activation,
             "hooks": registered,
         })
 
@@ -5779,8 +5810,9 @@ def handle_post(handler, parsed) -> bool:
                     if getattr(existing, "pinned", False) and not getattr(existing, "archived", False)
                 )
                 pinned_ids.discard(body["session_id"])
-                if len(pinned_ids) >= 3:
-                    return bad(handler, "Up to 3 sessions can be pinned. Unpin one before pinning another.", 400)
+                pinned_sessions_limit = int(load_settings().get("pinned_sessions_limit", 3) or 3)
+                if len(pinned_ids) >= pinned_sessions_limit:
+                    return bad(handler, f"Up to {pinned_sessions_limit} sessions can be pinned. Unpin one before pinning another.", 400)
                 # Mark in-memory pin state under LOCK so concurrent pin
                 # requests see the increment immediately, even before
                 # save() finishes flushing to disk.
