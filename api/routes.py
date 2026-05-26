@@ -9105,10 +9105,12 @@ def start_session_turn(
     requested_model = s.model
     requested_provider = getattr(s, "model_provider", None)
     # Server-initiated wakeup (Option Z): resolve persisted model via the
-    # standard helper (catalog-rebuild deferral is a separate PR — D-un2).
+    # standard helper, opting into the cached-catalog path so the WebUI does
+    # not pay a cold catalog rebuild on every wake-up.
     model, model_provider, normalized_model = _resolve_compatible_session_model_state(
         requested_model,
         requested_provider,
+        prefer_cached_catalog=True,
     )
     resp = _start_chat_stream_for_session(
         s,
