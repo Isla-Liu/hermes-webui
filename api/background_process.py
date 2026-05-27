@@ -15,9 +15,11 @@ The drain thread:
        intent to ``cli._format_process_notification`` and
        ``gateway.run._format_gateway_process_notification`` so the agent sees
        the same payload regardless of host,
-    4. emits a ``process_complete`` SSE event on the active stream(s) for that
-       session (DEMOTED to pure live-view — an open tab streams the turn
-       live), records a server-side marker in ``PENDING_BG_TASK_COMPLETIONS``,
+    4. emits a canonical ``bg_task_complete`` SSE event (plus a temporary
+       ``process_complete`` alias for the migration window) on the active
+       stream(s) for that session (DEMOTED to pure live-view — an open tab
+       streams the turn live), records a server-side marker in
+       ``PENDING_BG_TASK_COMPLETIONS``,
        and — Option Z PIVOT — starts the agent wakeup turn **directly
        server-side** when the session is idle (``_start_server_side_wakeup_turn``
        → ``routes.start_session_turn``). This needs NO browser round-trip, so
@@ -100,9 +102,10 @@ class SessionChannel:
         does NOT immediately collect the channel; the reaper waits a 60s
         grace so a quick navigation away/back doesn't churn the registry.
       - The reaper collects the channel when subscribers stay empty past the
-        grace period, OR when ``created_at`` is older than
-        SESSION_CHANNEL_IDLE_TTL_SECS regardless of subscriber count (zombie
-        cap).
+        grace period, OR when subscribers are empty AND ``created_at`` is
+        older than SESSION_CHANNEL_IDLE_TTL_SECS (zombie cap — TTL-based
+        collection only applies when there are no subscribers; a live tab
+        keeps the channel forever).
     """
 
     def __init__(self, session_id: str):
