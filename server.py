@@ -550,12 +550,15 @@ def main() -> None:
             drain_all_on_shutdown()
         except Exception:
             logger.debug("Failed to drain lifecycle on shutdown", exc_info=True)
-        # Stop process_complete drain + SessionChannel reaper (ours-original)
+        # Stop bg_task_complete drain + SessionChannel reaper (ours-original).
+        # The drain thread emits the canonical ``bg_task_complete`` event
+        # (with ``process_complete`` kept as a temporary backward-compat
+        # alias for older clients — see start_drain_thread comment above).
         try:
             from api.background_process import stop_drain_thread
             stop_drain_thread()
         except Exception:
-            logger.debug("Failed to stop process_complete drain thread during shutdown")
+            logger.debug("Failed to stop bg_task_complete drain thread during shutdown")
         try:
             from api.background_process import stop_session_channel_reaper
             stop_session_channel_reaper()
