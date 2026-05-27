@@ -1055,9 +1055,9 @@ def _drain_loop() -> None:
         from tools import process_registry as _pr_mod  # noqa: F401
         from tools.process_registry import process_registry
     except Exception as exc:
-        logger.warning("process_complete drain unavailable: %s", exc)
+        logger.warning("bg_task_complete drain unavailable: %s", exc)
         return
-    logger.info("process_complete drain thread started")
+    logger.info("bg_task_complete drain thread started")
     while not _DRAIN_STOP.is_set():
         try:
             evt = process_registry.completion_queue.get(timeout=1.0)
@@ -1069,7 +1069,7 @@ def _drain_loop() -> None:
         try:
             _process_one(evt)
         except Exception:
-            logger.warning("process_complete event handling failed", exc_info=True)
+            logger.warning("bg_task_complete event handling failed", exc_info=True)
 
 
 def register_process_session(session_key: str, session_id: str) -> None:
@@ -1105,7 +1105,7 @@ def start_drain_thread() -> bool:
     _DRAIN_STOP.clear()
     _DRAIN_THREAD = threading.Thread(
         target=_drain_loop,
-        name="hermes-webui-process-complete-drain",
+        name="hermes-webui-bg-task-complete-drain",
         daemon=True,
     )
     _DRAIN_THREAD.start()
