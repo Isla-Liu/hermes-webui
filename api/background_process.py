@@ -100,9 +100,10 @@ class SessionChannel:
         does NOT immediately collect the channel; the reaper waits a 60s
         grace so a quick navigation away/back doesn't churn the registry.
       - The reaper collects the channel when subscribers stay empty past the
-        grace period, OR when ``created_at`` is older than
-        SESSION_CHANNEL_IDLE_TTL_SECS regardless of subscriber count (zombie
-        cap).
+        grace period, OR when subscribers are empty AND ``created_at`` is
+        older than SESSION_CHANNEL_IDLE_TTL_SECS (zombie cap — applies only
+        when nobody is subscribed; a live subscriber keeps the channel even
+        past the idle TTL).
     """
 
     def __init__(self, session_id: str):
