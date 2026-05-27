@@ -111,33 +111,34 @@ def test_concurrent_turns_capture_their_own_session_under_env_race():
             # The EXACT call terminal_tool.py makes for a bg spawn:
             captured[label] = get_current_session_key(default="")
 
-    ta = threading.Thread(target=turn, args=(SESS_A, "A"))
-    tb = threading.Thread(target=turn, args=(SESS_B, "B"))
-    ta.start()
-    tb.start()
-    ta.join(timeout=10)
-    tb.join(timeout=10)
+    try:
+        ta = threading.Thread(target=turn, args=(SESS_A, "A"))
+        tb = threading.Thread(target=turn, args=(SESS_B, "B"))
+        ta.start()
+        tb.start()
+        ta.join(timeout=10)
+        tb.join(timeout=10)
 
-    # Contextvar must be restored after the turn context exits (no thread-pool
-    # residue → no new race for a reused worker).
-    assert sc._SESSION_KEY.get() is sc._UNSET
+        # Contextvar must be restored after the turn context exits (no thread-pool
+        # residue → no new race for a reused worker).
+        assert sc._SESSION_KEY.get() is sc._UNSET
 
-    assert captured.get("A") == SESS_A, (
-        f"MISROUTE: session A captured {captured.get('A')!r}, expected "
-        f"{SESS_A!r} — per-turn identity still races on process-global env"
-    )
-    assert captured.get("B") == SESS_B, (
-        f"MISROUTE: session B captured {captured.get('B')!r}, expected {SESS_B!r}"
-    )
-
-    # Restore HERMES_SESSION_KEY to its pre-test value (or unset if it was
-    # never set), independent of which assertion above might have failed —
-    # see save/restore note at the top of the test.
-    if _prev_env is _prev_env_sentinel:
-        os.environ.pop("HERMES_SESSION_KEY", None)
-    else:
-        assert isinstance(_prev_env, str)
-        os.environ["HERMES_SESSION_KEY"] = _prev_env
+        assert captured.get("A") == SESS_A, (
+            f"MISROUTE: session A captured {captured.get('A')!r}, expected "
+            f"{SESS_A!r} — per-turn identity still races on process-global env"
+        )
+        assert captured.get("B") == SESS_B, (
+            f"MISROUTE: session B captured {captured.get('B')!r}, expected {SESS_B!r}"
+        )
+    finally:
+        # Restore HERMES_SESSION_KEY to its pre-test value (or unset if it was
+        # never set), independent of which assertion above might have failed —
+        # see save/restore note at the top of the test.
+        if _prev_env is _prev_env_sentinel:
+            os.environ.pop("HERMES_SESSION_KEY", None)
+        else:
+            assert isinstance(_prev_env, str)
+            os.environ["HERMES_SESSION_KEY"] = _prev_env
 
 
 def test_turn_identity_binder_restores_previous_value():

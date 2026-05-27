@@ -3297,8 +3297,14 @@ def _sse(handler, event, data):
 # `except _CLIENT_DISCONNECT_ERRORS:` breaks the loop, `finally` drops the
 # subscriber, the browser's EventSource auto-reconnects, and the OS thread
 # is released. SessionChannel already supports reconnect + offline buffer,
-# so no events are lost for a tab that comes back.
-SSE_WRITE_DEADLINE_SECONDS = 20.0
+# so no events are lost for a tab that comes back. Operators behind unusual
+# proxies can tune the deadline without code changes.
+try:
+    SSE_WRITE_DEADLINE_SECONDS = float(os.getenv("HERMES_SSE_WRITE_DEADLINE", "20") or "20")
+except (TypeError, ValueError):
+    SSE_WRITE_DEADLINE_SECONDS = 20.0
+if SSE_WRITE_DEADLINE_SECONDS <= 0:
+    SSE_WRITE_DEADLINE_SECONDS = 20.0
 
 
 def _sse_set_write_deadline(handler, seconds=None):
