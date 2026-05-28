@@ -153,7 +153,9 @@ class SessionChannel:
                 # detection will eventually tear the connection down and the
                 # browser will reconnect, replaying the live stream from
                 # whatever fires next. process_complete is intrinsically
-                # idempotent (frontend dedupes by process_id).
+                # idempotent (frontend dedupes by ``(session_id, event_id)``
+                # using a small ring-buffer in static/messages.js — see the
+                # bg_task_complete consumer-side dedupe introduced in PR #2971).
                 logger.debug("SessionChannel emit: subscriber buffer full, dropping")
             except Exception:
                 logger.debug("SessionChannel emit failed", exc_info=True)
@@ -391,10 +393,23 @@ def _emit_to_session_streams(session_id: str, event: str, data: dict) -> int:
     from api import config as _cfg
 
     emitted = 0
+    # Snapshot ACTIVE_RUNS under ACTIVE_RUNS_LOCK so owner_sid lookups below
+    # see a consistent view — reading ACTIVE_RUNS without the lock can race
+    # with register/unregister paths and produce a transient owner-unknown
+    # verdict, causing in-turn deliveries to be dropped. Per Copilot review
+    # on PR #2971. Taken before STREAMS_LOCK to avoid nested-lock ordering
+    # concerns (the two locks are otherwise independent).
+    if hasattr(_cfg, "ACTIVE_RUNS") and hasattr(_cfg, "ACTIVE_RUNS_LOCK"):
+        with _cfg.ACTIVE_RUNS_LOCK:
+            active_runs_snapshot: dict = dict(_cfg.ACTIVE_RUNS)
+    elif hasattr(_cfg, "ACTIVE_RUNS"):
+        active_runs_snapshot = dict(_cfg.ACTIVE_RUNS)
+    else:
+        active_runs_snapshot = {}
     with _cfg.STREAMS_LOCK:
         items = list(_cfg.STREAMS.items())
     for stream_id, channel in items:
-        meta = _cfg.ACTIVE_RUNS.get(stream_id) if hasattr(_cfg, "ACTIVE_RUNS") else None
+        meta = active_runs_snapshot.get(stream_id)
         owner_sid = (meta or {}).get("session_id") if isinstance(meta, dict) else None
         # Copilot review #3: only emit on the STREAMS loop when the stream's
         # owning session is KNOWN and matches. Previously, when no ACTIVE_RUNS
