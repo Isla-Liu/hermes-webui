@@ -4,6 +4,7 @@
 ## [Unreleased]
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 ### Added
 
 - WebUI surfaces a toast on background task completion and drops the surface when the user is already focused on the session pane.
@@ -32,6 +33,14 @@
 
 - **Fast-background-task wakeup race — the Option Z defer path had no autonomous-agent drain** (Isla Liu, fork prototype; final follow-up to Option Z, on top of `bdc6e7b`). After the model-resolve hang fix, a `sleep 5` empty bg task self-woke the agent (idle path, Test A ✅) but a `sleep 2` fast task did not (Test B ❌). **Root cause (proven by source, not speculation):** `api/background_process.py::_process_one`'s defer-vs-start branch — when a completion arrives and `_session_has_active_turn(session_id)` is True (`ACTIVE_RUNS` has a row), Option Z cannot start a turn (`start_session_turn` would 409). It only logged and left a bare `PENDING_BG_TASK_COMPLETIONS` session flag; the `wakeup_prompt` was **discarded**. The only consumer of that flag was the PR #2279 next-turn drain (`api/streaming._drain_webui_process_notifications`, called inside the turn pipeline at `streaming.py:3445`), which reads `completion_queue` — already emptied by the Option Z drain thread — and is gated by `BG_TASK_COMPLETE_EVENTS_SEEN` + registry `_completion_consumed` (both set in `_process_one` *before* the defer). The turn-teardown chokepoint (`streaming.py:4602-4610` `STREAMS.pop` / `unregister_active_run`) has a window between "agent finished output" and "ACTIVE_RUNS cleared" where `_session_has_active_turn` still returns True. A FAST task (2s) completes inside that window → defer → marker left; for an **autonomous agent there is no next user turn**, so the deferred wakeup is lost forever. A SLOW task (5s) completes after teardown finished → idle path → fires. Exactly matches A-success / B-fail. **Fix:** persist the prompt at defer time in `api/config.py::DEFERRED_PROCESS_WAKEUPS` (guarded by `DEFERRED_PROCESS_WAKEUPS_LOCK`) and add a turn-teardown idle-hook `api/background_process.py::drain_deferred_wakeups_for_session` invoked from `api/streaming.py` immediately after `unregister_active_run(stream_id)` (the session has just transitioned active→idle). This makes the busy-at-completion case symmetric with the idle-at-completion case: idle now → fire now (Option Z idle branch); busy now → fire at turn-end when the session goes idle. `claim_deferred_wakeups` pops the per-session entries atomically under the lock, so delivery is exactly-once — idempotent with the next-turn drain (whoever claims first fires; the other finds nothing → no double-fire), no infinite wakeup loop (the wakeup turn's own teardown re-runs the hook and finds nothing claimed), and a multi-stream / cancel-reconnect guard only fires when the just-ended stream was the last `ACTIVE_RUN` for the session. The idle path (Test A), the next-turn drain, and the closed-tab headline are untouched — only the defer path gains the teardown drain; the drain spawns the same throwaway daemon thread `_start_server_side_wakeup_turn` already uses, so streaming teardown never blocks. Tests: new `tests/test_wakeup_defer_race.py` (5 — headline completion-during-teardown, idle-still-once, next-turn+teardown no-double-fire, no-wakeup-loop, multi-stream guard); headline `test_server_side_wakeup_when_idle_no_tab` + the Option Z / AB-coexistence suites stay green; full suite 0 regressions vs the ~5677 baseline.
 =======
+=======
+## [v0.51.152] — 2026-05-28 — Release DX (stage-batch34 — single-PR optional gateway-backed browser chat)
+
+### Added
+
+- Browser chat can now opt into a default-off `HERMES_WEBUI_CHAT_BACKEND=gateway` bridge that routes new WebUI turns through a running Hermes Gateway API server while preserving the existing WebUI chat start/stream contract. Strict enable: only the literal values `gateway`, `api_server`, or `api-server` activate the bridge — generic truthy strings like `1` or `true` keep the legacy in-process WebUI runtime. Configurable via `HERMES_WEBUI_GATEWAY_BASE_URL` (default `http://127.0.0.1:8642`) and `HERMES_WEBUI_GATEWAY_API_KEY` (falls back to `API_SERVER_KEY`). New `api/gateway_chat.py` module isolates the bridge logic; existing direct WebUI chat path unchanged when the env/config is not set. (#3021)
+
+>>>>>>> origin/master
 ## [v0.51.151] — 2026-05-28 — Release DW (stage-batch33 — 3-PR mid-risk batch: SSE reattach + title-lang + composer cap)
 
 ### Fixed
