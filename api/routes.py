@@ -2590,6 +2590,7 @@ from api.models import (
     prune_session_from_index,
     ensure_cron_project,
     is_cron_session,
+    is_safe_session_id,
 )
 from api.workspace import (
     load_workspaces,
@@ -5571,7 +5572,7 @@ def handle_post(handler, parsed) -> bool:
         if not sid or not isinstance(sid, str) or not sid.strip():
             return bad(handler, "session_id must be a non-empty string", status=400)
         sid = sid.strip()
-        if not all(c in '0123456789abcdefghijklmnopqrstuvwxyz_' for c in sid):
+        if not is_safe_session_id(sid):
             return bad(handler, "Invalid session_id", 400)
         try:
             s = get_session(sid, metadata_only=True)
@@ -5593,7 +5594,7 @@ def handle_post(handler, parsed) -> bool:
         sid = body.get("session_id", "")
         if not sid:
             return bad(handler, "session_id is required")
-        if not all(c in '0123456789abcdefghijklmnopqrstuvwxyz_' for c in sid):
+        if not is_safe_session_id(sid):
             return bad(handler, "Invalid session_id", 400)
         cli_meta_for_delete = _lookup_cli_session_metadata(sid)
         if cli_meta_for_delete.get("read_only"):
