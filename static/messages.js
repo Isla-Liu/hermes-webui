@@ -873,7 +873,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       (typeof document!=='undefined'&&document.wasDiscarded===true);
   }
 
-  function _reattachOrRestoreAfterDeferredStreamError(){
+  function _reattachOrRestoreAfterDeferredStreamError(source){
     if(_terminalStateReached||_streamFinalized) return;
     if((S.session&&S.session.session_id)!==activeSid) return;
     (async()=>{
@@ -889,13 +889,13 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       }catch(_){
         if(_deferStreamErrorIfOffline()||_pageHiddenForStreamError()) return;
       }
-      if(await _restoreSettledSession()) return;
+      if(await _restoreSettledSession(source)) return;
       if(_deferStreamErrorIfOffline()||_pageHiddenForStreamError()) return;
-      _handleStreamError();
+      _handleStreamError(source);
     })();
   }
 
-  function _deferStreamErrorIfPageHidden(){
+  function _deferStreamErrorIfPageHidden(source){
     if(!_pageHiddenForStreamError()) return false;
     setComposerStatus('Connection paused. Reconnecting when this tab returns…');
     if(S.session&&S.session.session_id===activeSid&&streamId) S.activeStreamId=streamId;
@@ -907,7 +907,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
         window.removeEventListener('pageshow',resume);
         document.removeEventListener('visibilitychange',resume);
         _deferredStreamRecoveryBound=false;
-        _reattachOrRestoreAfterDeferredStreamError();
+        _reattachOrRestoreAfterDeferredStreamError(source);
       };
       document.addEventListener('visibilitychange',resume);
       window.addEventListener('focus',resume);
@@ -1987,7 +1987,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
 
     source.addEventListener('stream_end',async e=>{
       if(_streamFinalized){
-        source.close();
+        _closeSource(source);
         return;
       }
       _terminalStateReached=true;
@@ -2000,8 +2000,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       // live DOM/inflight state remains projected and can duplicate Thinking or
       // assistant content until a later session switch. Settle from the persisted
       // session before closing so the pane converges on canonical state.
-      if(await _restoreSettledSession()){
-        source.close();
+      if(await _restoreSettledSession(source)){
         return;
       }
       if(_persistTimer){clearTimeout(_persistTimer);_persistTimer=null;}
@@ -2010,7 +2009,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       _streamFadeCleanupReduceMotionListener();
       _smdEndParser();
       if(typeof finalizeThinkingCard==='function') finalizeThinkingCard();
-      source.close();
+      _closeSource(source);
     });
 
     source.addEventListener('pending_steer_leftover',e=>{
@@ -2194,7 +2193,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       if(typeof recordClientSSEError==='function') recordClientSSEError('chat-response',{ready_state:source?source.readyState:null,session_id:activeSid,stream_id:streamId,reason:'chat EventSource.onerror'});
       source.close();
       if(_deferStreamErrorIfOffline()) return;
-      if(_deferStreamErrorIfPageHidden()) return;
+      if(_deferStreamErrorIfPageHidden(source)) return;
       _closeSource(source);
       // Attempt one reconnect if the stream is still active server-side
       if(!_reconnectAttempted && streamId){
@@ -2216,17 +2215,17 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
           }catch(_){
             if(_deferStreamErrorIfOffline()) return;
           }
-          if(await _restoreSettledSession()) return;
+          if(await _restoreSettledSession(source)) return;
           if(_deferStreamErrorIfOffline()) return;
-          if(_deferStreamErrorIfPageHidden()) return;
-          _handleStreamError();
+          if(_deferStreamErrorIfPageHidden(source)) return;
+          _handleStreamError(source);
         },1500);
         return;
       }
-      if(await _restoreSettledSession()) return;
+      if(await _restoreSettledSession(source)) return;
       if(_deferStreamErrorIfOffline()) return;
-      if(_deferStreamErrorIfPageHidden()) return;
-      _handleStreamError();
+      if(_deferStreamErrorIfPageHidden(source)) return;
+      _handleStreamError(source);
     });
 
     source.addEventListener('cancel',e=>{
@@ -2276,7 +2275,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     }
   }
 
-  async function _restoreSettledSession(){
+  async function _restoreSettledSession(source){
     try{
       const data=await api(`/api/session?session_id=${encodeURIComponent(activeSid)}`);
       // Opus #2852 race-fix: if a late `done` event ran the finalize path while
@@ -2292,7 +2291,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       _smdEndParser();
       if(typeof finalizeThinkingCard==='function') finalizeThinkingCard();
       _clearOwnerInflightState();
-      _closeSource();
+      _closeSource(source);
       _clearApprovalForOwner();
       _clearClarifyForOwner('terminal');
       const isSessionViewed=_isSessionActivelyViewed(activeSid);
@@ -2339,7 +2338,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     }
   }
 
-  function _handleStreamError(){
+  function _handleStreamError(source){
     // Opus review Q1: mirror done/apperror/cancel finalization so any pending rAF
     // cannot fire after renderMessages() has settled the DOM with the error message.
     if(_persistTimer){clearTimeout(_persistTimer);_persistTimer=null;}
@@ -2348,7 +2347,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     _streamFadeCleanupReduceMotionListener();
     if(typeof finalizeThinkingCard==='function') finalizeThinkingCard();
     _clearOwnerInflightState();
-    _closeSource();
+    _closeSource(source);
     _clearApprovalForOwner();
     _clearClarifyForOwner('terminal');
     if(S.session&&S.session.session_id===activeSid){

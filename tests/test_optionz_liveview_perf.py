@@ -26,6 +26,7 @@ Defect A — SSE thread exhaustion with multiple tabs.
 
 from __future__ import annotations
 
+import ast
 import socket
 import threading
 import time
@@ -505,14 +506,47 @@ def test_emit_to_session_streams_does_not_leak_to_other_session_owner():
 
 
 def test_emit_to_session_streams_skip_unknown_owner_documented_in_source():
-    """Source-grep: the Copilot #3 resolution must be the skip-unknown-owner
-    form (`if owner_sid != session_id: continue`), not the old
-    broadcast-on-unknown fallback (`if owner_sid and owner_sid != ...`)."""
+    """The Copilot #3 owner guard must skip owner-unknown/mismatched streams.
+
+    Keep this source-shape test resilient to comments/docstring growth: inspect
+    the full function body and assert the semantic guard/continue shape instead
+    of depending on one exact source line being inside a fixed byte window.
+    """
     src = (REPO_ROOT / "api" / "background_process.py").read_text()
     fn_ix = src.index("def _emit_to_session_streams")
-    fn_src = src[fn_ix:fn_ix + 2600]
-    assert "if owner_sid != session_id:" in fn_src
-    assert "if owner_sid and owner_sid != session_id:" not in fn_src
+    next_fn_ix = src.find("\ndef ", fn_ix + len("def _emit_to_session_streams"))
+    if next_fn_ix == -1:
+        next_fn_ix = len(src)
+    fn_src = src[fn_ix:next_fn_ix]
+    tree = ast.parse(fn_src)
+
+    owner_guard = None
+    unsafe_broadcast_fallback = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        body_skips = any(isinstance(stmt, ast.Continue) for stmt in node.body)
+        if (
+            body_skips
+            and isinstance(test, ast.Compare)
+            and isinstance(test.left, ast.Name)
+            and test.left.id == "owner_sid"
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.NotEq)
+            and len(test.comparators) == 1
+            and isinstance(test.comparators[0], ast.Name)
+            and test.comparators[0].id == "session_id"
+        ):
+            owner_guard = node
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+            names = {n.id for n in ast.walk(test) if isinstance(n, ast.Name)}
+            if {"owner_sid", "session_id"} <= names:
+                unsafe_broadcast_fallback = node
+
+    assert owner_guard is not None
+    assert unsafe_broadcast_fallback is None
+    assert fn_src.index("active_runs_snapshot.get(stream_id)") < fn_src.index("channel.put_nowait")
     assert "Copilot review #3" in fn_src
 
 
