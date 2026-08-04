@@ -60,6 +60,12 @@ from api.process_event_utils import (
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_session_lineage(session_id: str):
+    from api.session_lineage import resolve_session_lineage
+
+    return resolve_session_lineage(session_id)
+
 _DRAIN_THREAD: Optional[threading.Thread] = None
 _DRAIN_STOP = threading.Event()
 _PROCESS_RECOVERY_DONE = False
@@ -1179,9 +1185,7 @@ def _resolve_completion_target(
     Agent events omit it and retain the existing session-key fallback.
     """
     resolved = str(session_key_resolved_sid or "")
-    owner = str(origin_ui_session_id or "")
-    if not owner:
-        return resolved
+    owner = str(origin_ui_session_id or "") or resolved
     if resolved and resolved != owner:
         logger.error(
             "cross-session completion route BLOCKED: session_key resolved to %r "
@@ -1189,7 +1193,15 @@ def _resolve_completion_target(
             resolved,
             owner,
         )
-    return owner
+    try:
+        return _resolve_session_lineage(owner).delivery_session_id
+    except Exception:
+        logger.error(
+            "completion target lineage could not be verified for %r",
+            owner,
+            exc_info=True,
+        )
+        return ""
 
 
 def _process_one(evt: dict) -> None:
@@ -1298,6 +1310,17 @@ def _process_one(evt: dict) -> None:
             process_registry=_process_registry,
         )
         return
+    try:
+        completion_lineage = _resolve_session_lineage(session_id)
+    except Exception:
+        logger.error(
+            "process_complete blocked: lineage unresolved for %r",
+            session_id,
+            exc_info=True,
+        )
+        return
+    coordination_session_id = completion_lineage.root_session_id
+    session_id = completion_lineage.delivery_session_id
     # ── Idempotency vs the REAL merged upstream #2279 (shared dedupe key) ──
     # The real merged #2279 next-turn drain
     # (api/streaming._drain_webui_process_notifications) dedupes ONLY via
@@ -1324,14 +1347,16 @@ def _process_one(evt: dict) -> None:
     # _move_to_finished() callers (kill_process racing the reader thread) can
     # occasionally enqueue twice despite the process_registry guard.
     with _cfg.BG_TASK_COMPLETE_EVENTS_SEEN_LOCK:
-        seen = _cfg.BG_TASK_COMPLETE_EVENTS_SEEN.setdefault(session_id, set())
+        seen = _cfg.BG_TASK_COMPLETE_EVENTS_SEEN.setdefault(
+            coordination_session_id, set()
+        )
         if process_id and process_id in seen:
             return
         if process_id:
             seen.add(process_id)
     payload = _build_payload(evt, session_id)
     _emit_bg_task_complete_events_coalesced(session_id, payload)
-    _cfg.PENDING_BG_TASK_COMPLETIONS.add(session_id)
+    _cfg.PENDING_BG_TASK_COMPLETIONS.add(coordination_session_id)
     # Mark the event consumed in the agent's process registry so the REAL
     # merged PR #2279's next-turn drain
     # (api/streaming._drain_webui_process_notifications) treats this process_id
@@ -1429,14 +1454,23 @@ def record_deferred_wakeup(session_id: str, process_id: str, wakeup_prompt: str)
     from api import config as _cfg
 
     try:
+        coordination_session_id = _resolve_session_lineage(
+            session_id
+        ).root_session_id
         with _cfg.DEFERRED_PROCESS_WAKEUPS_LOCK:
-            entries = _cfg.DEFERRED_PROCESS_WAKEUPS.setdefault(session_id, [])
+            entries = _cfg.DEFERRED_PROCESS_WAKEUPS.setdefault(
+                coordination_session_id, []
+            )
             if process_id and any(
                 e.get("process_id") == process_id for e in entries
             ):
                 return True
             entries.append(
-                {"process_id": process_id, "wakeup_prompt": wakeup_prompt}
+                {
+                    "process_id": process_id,
+                    "wakeup_prompt": wakeup_prompt,
+                    "origin_session_id": session_id,
+                }
             )
         return True
     except Exception:
@@ -1462,8 +1496,14 @@ def claim_deferred_wakeups(session_id: str) -> list[dict]:
     from api import config as _cfg
 
     try:
+        coordination_session_id = _resolve_session_lineage(
+            session_id
+        ).root_session_id
         with _cfg.DEFERRED_PROCESS_WAKEUPS_LOCK:
-            return _cfg.DEFERRED_PROCESS_WAKEUPS.pop(session_id, []) or []
+            return (
+                _cfg.DEFERRED_PROCESS_WAKEUPS.pop(coordination_session_id, [])
+                or []
+            )
     except Exception:
         logger.debug(
             "claim_deferred_wakeups failed for session %s", session_id, exc_info=True
@@ -1496,23 +1536,26 @@ def drain_deferred_wakeups_for_session(session_id: str) -> int:
     from api import config as _cfg
 
     try:
+        resolution = _resolve_session_lineage(session_id)
+        coordination_session_id = resolution.root_session_id
+        delivery_session_id = resolution.delivery_session_id
         # Multi-stream guard: only fire when the session is TRULY idle.
-        if _session_has_active_turn(session_id):
+        if _session_has_active_turn(coordination_session_id):
             return 0
         # Peek without claiming: avoid taking the entries then discovering
         # there is nothing to do under contention.
         with _cfg.DEFERRED_PROCESS_WAKEUPS_LOCK:
-            if not _cfg.DEFERRED_PROCESS_WAKEUPS.get(session_id):
+            if not _cfg.DEFERRED_PROCESS_WAKEUPS.get(coordination_session_id):
                 return 0
         # Atomic claim — exactly one caller gets the entries.
-        entries = claim_deferred_wakeups(session_id)
+        entries = claim_deferred_wakeups(coordination_session_id)
         if not entries:
             return 0
         # The session-level PENDING marker is server-internal telemetry; the
         # real delivery is the prompt(s) we just claimed. Discard it now that
         # the deferred wakeups are owned by this teardown.
         try:
-            _cfg.PENDING_BG_TASK_COMPLETIONS.discard(session_id)
+            _cfg.PENDING_BG_TASK_COMPLETIONS.discard(coordination_session_id)
         except Exception:
             logger.debug(
                 "PENDING discard failed for session %s", session_id, exc_info=True
@@ -1536,12 +1579,12 @@ def drain_deferred_wakeups_for_session(session_id: str) -> int:
             # hook and tries to claim them.
             for entry in leftover[1:]:
                 record_deferred_wakeup(
-                    session_id,
+                    coordination_session_id,
                     str((entry or {}).get("process_id") or ""),
                     str((entry or {}).get("wakeup_prompt") or "").strip(),
                 )
             _start_server_side_wakeup_turn(
-                session_id,
+                delivery_session_id,
                 str((first or {}).get("wakeup_prompt") or "").strip(),
                 process_id=str((first or {}).get("process_id") or ""),
             )
@@ -1551,7 +1594,7 @@ def drain_deferred_wakeups_for_session(session_id: str) -> int:
                 "turn-teardown idle-hook redelivered %d deferred wakeup(s) "
                 "for session %s",
                 started,
-                session_id,
+                coordination_session_id,
             )
         return started
     except Exception:
@@ -1578,7 +1621,58 @@ def _session_has_active_turn(session_id: str) -> bool:
     ``_start_chat_stream_for_session``'s own active-stream guard — i.e. the
     same lock /api/chat/start uses is the authoritative race backstop.
     """
-    return bool(_active_run_ids_for_session(session_id, attachable_only=False))
+    from api import config as _cfg
+
+    try:
+        requested_root = _resolve_session_lineage(session_id).root_session_id
+        with _cfg.STREAMS_LOCK:
+            live_stream_ids = set((_cfg.STREAMS or {}).keys())
+        now = time.time()
+        stale_keys: list[str] = []
+        with _cfg.ACTIVE_RUNS_LOCK:
+            for run_key, meta in list((_cfg.ACTIVE_RUNS or {}).items()):
+                if not isinstance(meta, dict):
+                    return True
+                stream_id = str(meta.get("stream_id") or run_key or "").strip()
+                cancelling = not _cfg.active_run_is_attachable(meta)
+                stale_cancel = (
+                    cancelling
+                    and _cfg.active_run_cancel_is_stale(
+                        meta,
+                        grace_seconds=_ACTIVE_RUN_CANCEL_UNWIND_SECONDS,
+                        now=now,
+                    )
+                    and run_key not in live_stream_ids
+                    and stream_id not in live_stream_ids
+                )
+                if stale_cancel:
+                    stale_keys.append(run_key)
+                    continue
+                row_root = str(meta.get("lineage_id") or "").strip()
+                if not row_root:
+                    row_session_id = str(
+                        meta.get("delivery_session_id")
+                        or meta.get("session_id")
+                        or ""
+                    ).strip()
+                    if not row_session_id:
+                        return True
+                    try:
+                        row_root = _resolve_session_lineage(
+                            row_session_id
+                        ).root_session_id
+                    except Exception:
+                        return True
+                if row_root == requested_root:
+                    return True
+            for run_key in stale_keys:
+                (_cfg.ACTIVE_RUNS or {}).pop(run_key, None)
+        for run_key in stale_keys:
+            _cfg.unregister_stream_owner(run_key)
+    except Exception:
+        logger.debug("ACTIVE_RUNS active-turn check failed", exc_info=True)
+        return True
+    return False
 
 
 def _start_server_side_wakeup_turn(
@@ -1617,8 +1711,11 @@ def _start_server_side_wakeup_turn(
         try:
             from api.routes import start_session_turn
 
+            resolution = _resolve_session_lineage(session_id)
+            coordination_session_id = resolution.root_session_id
+            delivery_session_id = resolution.delivery_session_id
             resp = start_session_turn(
-                session_id, wakeup_prompt, source="process_wakeup"
+                delivery_session_id, wakeup_prompt, source="process_wakeup"
             )
             status = int((resp or {}).get("_status", 200) or 200)
             if status == 409 and (resp or {}).get("error") == "process_wakeup_paused":
@@ -1626,7 +1723,9 @@ def _start_server_side_wakeup_turn(
                     "server-side wakeup suppressed for session %s: provider credential state is paused",
                     session_id,
                 )
-            elif status == 409:
+            elif status == 409 or (
+                status == 503 and bool((resp or {}).get("retryable"))
+            ):
                 # Raced an active turn (e.g. a human /api/chat/start, or a
                 # sibling deferred-wakeup thread). Re-defer this prompt so it
                 # is delivered by the winning turn's teardown / next-turn drain
@@ -1635,7 +1734,9 @@ def _start_server_side_wakeup_turn(
                 # delivery, and BG_TASK_COMPLETE_EVENTS_SEEN already deduped
                 # this process_id, so re-recording cannot double-fire.
                 if wakeup_prompt:
-                    record_deferred_wakeup(session_id, process_id, wakeup_prompt)
+                    record_deferred_wakeup(
+                        coordination_session_id, process_id, wakeup_prompt
+                    )
                 logger.debug(
                     "server-side wakeup raced an active turn for session %s; "
                     "re-deferred for redelivery on next teardown/turn",
