@@ -983,13 +983,19 @@ def _run_admitted_gateway_chat_streaming(
     attachments=None,
     *,
     admission,
+    completion_context=None,
     completion_observer=None,
     model_provider=None,
     goal_related=False,
     regeneration=False,
 ):
     """Park an admitted gateway worker and release its exact owner once."""
-    from api.session_lineage import TurnAdmission, release_turn_admission
+    from api.session_lineage import (
+        TurnAdmission,
+        mark_completion_execution_delivered,
+        mark_completion_execution_started,
+        release_turn_admission,
+    )
 
     if not isinstance(admission, TurnAdmission):
         raise ValueError("gateway streaming requires an exact TurnAdmission")
@@ -1020,7 +1026,12 @@ def _run_admitted_gateway_chat_streaming(
                 return
         if admission.abort.is_set():
             return
-        return _run_gateway_chat_streaming_core(
+        if completion_context is not None:
+            mark_completion_execution_started(
+                completion_context,
+                reservation_id=stream_id,
+            )
+        result = _run_gateway_chat_streaming_core(
             session_id,
             msg_text,
             model,
@@ -1032,6 +1043,12 @@ def _run_admitted_gateway_chat_streaming(
             lineage_root_session_id=admission.root_session_id,
             regeneration=regeneration,
         )
+        if completion_context is not None:
+            mark_completion_execution_delivered(
+                completion_context,
+                reservation_id=stream_id,
+            )
+        return result
     except BaseException:
         admission.abort.set()
         admission.admitted.set()
@@ -1503,22 +1520,6 @@ def _run_gateway_chat_streaming_core(
             # same sort key; later transcript merges can then fall back to
             # role/content ordering instead of turn order.
             assistant_ts = now + 0.000001
-            pending_source = getattr(s, "pending_user_source", None) or "webui"
-            from api.streaming import _active_turn_authority, _materialize_active_turn_user
-
-            active_turn_identity = _active_turn_authority(s, stream_id, msg_text)
-            user_msg = _materialize_active_turn_user(
-                active_turn_identity,
-                str(msg_text or ""),
-                pending_source,
-            )
-            user_msg["timestamp"] = float(
-                active_turn_identity.get("timestamp") or now
-            )
-            assistant_msg = {"role": "assistant", "content": assistant_text, "timestamp": assistant_ts}
-            saved_reasoning = STREAM_REASONING_TEXT.get(stream_id, "")
-            if saved_reasoning:
-                assistant_msg["reasoning"] = saved_reasoning
             previous_messages = list(getattr(s, "messages", None) or [])
             stored_context = getattr(s, "context_messages", None)
             previous_context = list(
@@ -1526,6 +1527,74 @@ def _run_gateway_chat_streaming_core(
                 if isinstance(stored_context, list) and (regeneration or stored_context)
                 else getattr(s, "messages", None) or []
             )
+            pending_source = getattr(s, "pending_user_source", None) or "webui"
+            raw_pending_completion_key = getattr(s, "pending_completion_key", "")
+            pending_completion_key = (
+                raw_pending_completion_key.strip()
+                if isinstance(raw_pending_completion_key, str)
+                else ""
+            )
+            checkpoint_user = None
+            if pending_completion_key:
+                raw_pending_correlation = getattr(
+                    s,
+                    "pending_completion_correlation_sha256",
+                    "",
+                )
+                pending_correlation = (
+                    raw_pending_correlation.strip()
+                    if isinstance(raw_pending_correlation, str)
+                    else ""
+                )
+                raw_pending_turn_id = getattr(s, "pending_turn_id", "")
+                pending_turn_id = (
+                    raw_pending_turn_id.strip()
+                    if isinstance(raw_pending_turn_id, str)
+                    else ""
+                )
+                checkpoint_matches = [
+                    row
+                    for row in previous_context
+                    if isinstance(row, dict)
+                    and row.get("role") == "user"
+                    and str(
+                        (row.get("_completion_delivery") or {}).get(
+                            "completion_key"
+                        )
+                        or ""
+                    )
+                    == pending_completion_key
+                    and row.get("_completion_correlation_sha256")
+                    == pending_correlation
+                    and row.get("_turn_id") == pending_turn_id
+                    and row.get("content") == str(msg_text or "")
+                ]
+                if len(checkpoint_matches) != 1:
+                    raise RuntimeError(
+                        "gateway completion context checkpoint is not exact"
+                    )
+                checkpoint_user = checkpoint_matches[0]
+            if pending_completion_key:
+                user_msg = checkpoint_user
+            else:
+                from api.streaming import (
+                    _active_turn_authority,
+                    _materialize_active_turn_user,
+                )
+
+                active_turn_identity = _active_turn_authority(s, stream_id, msg_text)
+                user_msg = _materialize_active_turn_user(
+                    active_turn_identity,
+                    str(msg_text or ""),
+                    pending_source,
+                )
+                user_msg["timestamp"] = float(
+                    active_turn_identity.get("timestamp") or now
+                )
+            assistant_msg = {"role": "assistant", "content": assistant_text, "timestamp": assistant_ts}
+            saved_reasoning = STREAM_REASONING_TEXT.get(stream_id, "")
+            if saved_reasoning:
+                assistant_msg["reasoning"] = saved_reasoning
             previous_process_wakeup_pause = dict(getattr(s, "process_wakeup_pause", {}) or {})
             # Stamp stable ids on the two new rows (shared with the display merge
             # below) so display and model-context copies share an id for the
@@ -1540,7 +1609,12 @@ def _run_gateway_chat_streaming_core(
                 )
             except Exception:
                 logger.debug("Failed to stamp stable ids on gateway turn rows", exc_info=True)
-            s.context_messages = previous_context + [user_msg, assistant_msg]
+            context_append_rows = (
+                [assistant_msg]
+                if checkpoint_user is not None
+                else [user_msg, assistant_msg]
+            )
+            s.context_messages = previous_context + context_append_rows
             try:
                 from api.streaming import _is_context_compression_marker
 
@@ -1576,7 +1650,11 @@ def _run_gateway_chat_streaming_core(
                         msg_norm = " ".join(str(msg_text or "").split())
                         if latest_text == msg_norm:
                             display = display[:-1]
-                s.messages = display + [user_msg, assistant_msg]
+                s.messages = display + (
+                    [assistant_msg]
+                    if checkpoint_user is not None
+                    else [user_msg, assistant_msg]
+                )
             s.active_stream_id = None
             s.pending_user_message = None
             s.pending_attachments = None
