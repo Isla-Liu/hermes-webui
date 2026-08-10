@@ -2070,7 +2070,10 @@ def recover_processes_for_webui(process_registry=None, get_session_fn=None) -> i
         )
 
         repaired_receipts = 0
-        for completion_context in accepted_completion_delivery_contexts():
+        restart_diagnostics = []
+        for completion_context in accepted_completion_delivery_contexts(
+            diagnostics=restart_diagnostics,
+        ):
             try:
                 if not recover_accepted_completion_delivery(completion_context):
                     continue
@@ -2086,7 +2089,6 @@ def recover_processes_for_webui(process_registry=None, get_session_fn=None) -> i
                     exc_info=True,
                 )
         resumed_receipts = 0
-        restart_diagnostics = []
         for completion_context in pending_completion_delivery_contexts(
             diagnostics=restart_diagnostics,
         ):

@@ -152,6 +152,22 @@ and 5; it does not mark every run-state boundary implemented.
    still owns a live channel. Staleness is measured from the cancellation
    timestamp (falling back to run start), so a long-running turn cancelled
    moments ago is never mistaken for an orphan.
+10. **Persisted-session discovery is coherently fenced.** The directory-mtime
+   snapshot used by lineage and recovery scanners is an optimization, not a
+   second source of truth. Snapshot validation, scanning, and publication must
+   share one process-local fence with successful sidecar-save and sidecar-delete
+   invalidation. A failed atomic replace must leave the prior snapshot valid;
+   a successful save or deletion must make an overlapping scan unable to
+   republish stale membership even when the filesystem reports a frozen or
+   coarse directory mtime.
+11. **Autonomous completion restart is row-isolated and tip-stable.** A malformed
+    or foreign completion receipt row remains visible and quarantined, but must
+    not starve unrelated valid pending rows in the same receipt store. Before a
+    pending incorporated turn reclaims execution, it must resolve the expected
+    delivery tip, acquire the stable-root permit, and re-resolve under that
+    permit. A moved tip is a typed `delivery_tip_moved` rejection: the old
+    receipt, source sidecar, and replacement tip remain untouched and no worker
+    is started.
 
 ## Review Checklist
 
@@ -175,6 +191,10 @@ context reconstruction, or session metadata:
 - If it introduces or changes a reclamation window, what proves an in-flight
   cancellation is not evicted early, and that a wedged one is eventually freed?
 - Can automatic compression or recovery text become visible active-turn content?
+- Can one malformed completion receipt starve unrelated restart work, or can a
+  pending completion mutate its receipt after its delivery tip moves?
+- Can a concurrent save/delete race republish stale persisted-session IDs when
+  directory mtime does not advance?
 - What test or manual evidence proves the invariant?
 
 ## Existing Issue Map
