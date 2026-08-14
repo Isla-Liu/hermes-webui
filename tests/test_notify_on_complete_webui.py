@@ -1,7 +1,11 @@
+import ast
 from pathlib import Path
 import json
 import queue
+import sys
 import threading
+import time
+import types
 from types import SimpleNamespace
 
 from api import background_process as bp
@@ -14,6 +18,7 @@ from api.session_lineage import (
     mark_completion_execution_started,
 )
 from api.turn_journal import read_turn_journal
+from tests._wakeup_helpers import FakeProcessRegistry, install_fake_registry
 
 
 def test_webui_drains_only_matching_background_completion_events():
@@ -268,3 +273,193 @@ def test_drain_orders_converge_on_one_completion(monkeypatch, tmp_path):
             admissions[admission_start],
         )
 
+
+def test_current_turn_fresh_process_and_async_choose_same_root_and_tip_owner(
+    monkeypatch,
+    tmp_path,
+):
+    """R3: both fresh kinds converge on one root/profile and current tip."""
+    from api import streaming
+    from tests.test_background_process_restart_recovery import (
+        _install_current_turn_async_source,
+    )
+
+    monkeypatch.setattr(config, "SESSION_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(models, "SESSION_DIR", tmp_path)
+    with config.LOCK:
+        config.SESSIONS.clear()
+    with config.ACTIVE_RUNS_LOCK:
+        config.ACTIVE_RUNS.clear()
+    with routes.STREAMS_LOCK:
+        routes.STREAMS.clear()
+    with config.BG_TASK_COMPLETE_EVENTS_SEEN_LOCK:
+        config.BG_TASK_COMPLETE_EVENTS_SEEN.clear()
+    with config.DEFERRED_PROCESS_WAKEUPS_LOCK:
+        config.DEFERRED_PROCESS_WAKEUPS.clear()
+
+    root = Session(
+        session_id="convergence-root",
+        title="root",
+        profile="default",
+        pre_compression_snapshot=True,
+    )
+    root.save()
+    tip = Session(
+        session_id="convergence-tip",
+        title="tip",
+        profile="default",
+        parent_session_id=root.session_id,
+    )
+    tip.save()
+    with config.LOCK:
+        config.SESSIONS[root.session_id] = root
+        config.SESSIONS[tip.session_id] = tip
+
+    registry = FakeProcessRegistry()
+    process_id = "proc-root-tip-convergence"
+    delegation_id = "deleg-root-tip-convergence"
+    registry.register(process_id, root.session_id)
+    registry.register(delegation_id, root.session_id)
+    install_fake_registry(monkeypatch, registry)
+    process_module = sys.modules["tools.process_registry"]
+    monkeypatch.setattr(
+        process_module,
+        "format_process_notification",
+        lambda evt: (
+            f"[ASYNC DELEGATION BATCH COMPLETE — {evt['delegation_id']}]\n"
+            "converged"
+        ),
+        raising=False,
+    )
+    async_state = _install_current_turn_async_source(monkeypatch)
+    process_event = {
+        "type": "completion",
+        "session_id": process_id,
+        "session_key": root.session_id,
+        "origin_ui_session_id": root.session_id,
+        "origin_profile": "default",
+        "command": "true",
+        "exit_code": 0,
+        "output": "ordinary",
+        "completed_at": time.time(),
+    }
+    async_event = {
+        "type": "async_delegation",
+        "delegation_id": delegation_id,
+        "session_key": root.session_id,
+        "origin_ui_session_id": root.session_id,
+        "origin_profile": "default",
+        "status": "completed",
+        "is_batch": True,
+        "results": [{"task_index": 0, "status": "completed", "summary": "async"}],
+        "completed_at": time.time(),
+    }
+    registry.completion_queue.put(process_event)
+    registry.completion_queue.put(async_event)
+
+    class ImmediateThread:
+        def __init__(self, *args, target=None, **kwargs):
+            self.target = target
+            self.args = kwargs.pop("args", ())
+            self.kwargs = kwargs.pop("kwargs", {})
+
+        def start(self):
+            assert self.target is not None
+            self.target(*self.args, **self.kwargs)
+
+    bp_threading = types.SimpleNamespace(**vars(bp.threading))
+    bp_threading.Thread = ImmediateThread
+    monkeypatch.setattr(bp, "threading", bp_threading)
+    monkeypatch.setattr(bp, "_session_has_active_turn", lambda _sid: False)
+    monkeypatch.setattr(bp, "_emit_bg_task_complete_events_coalesced", lambda *_a: 0)
+    starts = []
+
+    def accept_canonical_turn(
+        session_id,
+        message,
+        *,
+        source,
+        completion_context,
+        completion_acceptance,
+    ):
+        starts.append(
+            {
+                "session_id": session_id,
+                "message": message,
+                "source": source,
+                "context": completion_context,
+            }
+        )
+        completion_acceptance()
+        return {"_status": 200, "stream_id": completion_context.correlation_id[:32]}
+
+    monkeypatch.setattr(routes, "start_session_turn", accept_canonical_turn)
+    result = streaming._drain_webui_process_notifications(tip.session_id)
+
+    print(
+        "CURRENT_TURN_ROOT_TIP_OWNER="
+        + json.dumps(
+            {
+                "contexts": len(starts),
+                "kinds": sorted(
+                    start["context"].completion_key.split(":", 1)[0] for start in starts
+                ),
+            },
+            sort_keys=True,
+        )
+    )
+    # Baseline reaches the drain but settles both sources directly, leaving zero
+    # CompletionDeliveryContext instances. That is behavioral RED, not AST RED.
+    assert result is None
+    assert len(starts) == 2
+    assert {start["context"].completion_key for start in starts} == {
+        f"process:{process_id}",
+        f"async_delegation:{delegation_id}",
+    }
+    for start in starts:
+        context = start["context"]
+        assert start["session_id"] == tip.session_id
+        assert context.origin_ui_session_id == root.session_id
+        assert context.root_session_id == root.session_id
+        assert context.delivery_session_id == tip.session_id
+        assert context.profile == "default"
+    assert registry.is_completion_consumed(process_id) is True
+    assert async_state["delivery_state"] == "delivered"
+    assert async_state["claims"] == [(delegation_id, "webui-background")]
+    assert len(async_state["completions"]) == 1
+
+    cross_profile = dict(process_event)
+    cross_profile["session_id"] = "proc-cross-profile"
+    cross_profile["origin_profile"] = "named-other-profile"
+    registry.completion_queue.put(cross_profile)
+    streaming._drain_webui_process_notifications(tip.session_id)
+    assert registry.completion_queue.qsize() == 1
+    assert registry.completion_queue.get_nowait() is cross_profile
+
+
+def test_current_turn_handoff_static_owner_and_order_contract():
+    source = Path("api/streaming.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    [drain] = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_drain_webui_process_notifications"
+    ]
+    assert [arg.arg for arg in drain.args.args] == ["session_id"]
+    assert drain.args.kwonlyargs == []
+    assert drain.returns is not None
+    assert ast.unparse(drain.returns) == "None"
+    drain_source = ast.get_source_segment(source, drain) or ""
+    assert drain_source.count("_process_one(evt)") == 1
+    assert "scan_budget = completion_queue.qsize()" in drain_source
+    assert drain_source.index("for evt in skipped_events:") < drain_source.index(
+        "_process_one(evt)"
+    )
+    assert "_format_process_notification" not in drain_source
+    assert "pending_async_acceptances" not in source
+    assert "def _accept_pending_async_delegations" not in source
+    assert "_process_notifications = _drain_webui_process_notifications" not in source
+    assert "_agent_msg_text" not in source
+    assert "_build_native_multimodal_message(workspace_ctx, msg_text" in source
+    assert "persist_user_message=msg_text" in source

@@ -1,19 +1,23 @@
 """Regression coverage for notify_on_complete across a WebUI restart."""
 
 import json
+import queue
+import sys
 import threading
 import time
+import types
 from types import SimpleNamespace
 
 import pytest
 
 from api import background_process as bp
-from api import config, models, routes
+from api import config, models, routes, streaming
 from api.models import Session
 from api.session_lineage import (
     CompletionDeliveryRestartError,
     build_completion_delivery_context,
     claim_completion_delivery,
+    completion_delivery_metadata,
     mark_completion_incorporated,
     pending_completion_delivery_contexts,
     read_completion_delivery_receipt,
@@ -1723,3 +1727,374 @@ def test_stale_pending_receipt_diagnostic_is_bounded_across_restarts(
         "incorporated",
         "pending",
     )
+
+
+def _install_current_turn_route_harness(monkeypatch, tmp_path):
+    """Run canonical completion acceptance while parking provider execution."""
+    admissions = []
+    real_routes_threading = routes.threading
+
+    class ImmediateThread:
+        def __init__(self, *args, target=None, **kwargs):
+            self.target = target
+            self.args = kwargs.pop("args", ())
+            self.kwargs = kwargs.pop("kwargs", {})
+
+        def start(self):
+            assert self.target is not None
+            self.target(*self.args, **self.kwargs)
+
+    class ParkedThread:
+        def __init__(self, *_args, **kwargs):
+            admissions.append(kwargs["kwargs"]["admission"])
+
+        def start(self):
+            admissions[-1].admitted.set()
+
+    bp_threading = SimpleNamespace(**vars(bp.threading))
+    bp_threading.Thread = ImmediateThread
+    routes_threading = SimpleNamespace(**vars(routes.threading))
+    routes_threading.Thread = ParkedThread
+    monkeypatch.setattr(bp, "threading", bp_threading)
+    monkeypatch.setattr(routes, "threading", routes_threading)
+    monkeypatch.setattr(bp, "_emit_bg_task_complete_events_coalesced", lambda *_a: 0)
+    monkeypatch.setattr(routes, "_agent_runtime_barrier_response", lambda **_k: None)
+    monkeypatch.setattr(routes, "_read_profile_model_config", lambda *_a, **_k: (None, None, {}))
+    monkeypatch.setattr(
+        routes,
+        "_resolve_chat_workspace_with_recovery",
+        lambda _session, _requested: str(tmp_path),
+    )
+    monkeypatch.setattr(
+        routes,
+        "_resolve_compatible_session_model_state",
+        lambda *_a, **_k: ("named-test-model", None, False),
+    )
+    monkeypatch.setattr(routes, "create_stream_channel", queue.Queue)
+    monkeypatch.setattr(routes, "get_webui_session_save_mode", lambda: "deferred")
+    monkeypatch.setattr(routes, "publish_session_list_changed", lambda *_a, **_k: None)
+    monkeypatch.setattr(routes, "set_last_workspace", lambda _workspace: None)
+    monkeypatch.setattr(routes, "webui_gateway_chat_enabled", lambda _cfg: False)
+    return admissions, real_routes_threading
+
+
+def _install_current_turn_async_source(monkeypatch):
+    state = {
+        "claims": [],
+        "completions": [],
+        "releases": [],
+        "delivery_state": "pending",
+    }
+    module = types.ModuleType("tools.async_delegation")
+
+    def claim_event_delivery(evt, consumer):
+        state["claims"].append((evt["delegation_id"], consumer))
+        if state["delivery_state"] != "pending":
+            return None
+        return f"claim:{consumer}"
+
+    def complete_event_delivery(evt, claim_id):
+        state["completions"].append((evt["delegation_id"], claim_id))
+        state["delivery_state"] = "delivered"
+
+    def release_event_delivery(evt, claim_id):
+        state["releases"].append((evt["delegation_id"], claim_id))
+
+    module.claim_event_delivery = claim_event_delivery  # type: ignore[attr-defined]
+    module.complete_event_delivery = complete_event_delivery  # type: ignore[attr-defined]
+    module.release_event_delivery = release_event_delivery  # type: ignore[attr-defined]
+    module.get_durable_delegation = (  # type: ignore[attr-defined]
+        lambda _delegation_id: {"delivery_state": state["delivery_state"]}
+    )
+    module.restore_undelivered_completions = lambda _queue: 0  # type: ignore[attr-defined]
+    tools_module = sys.modules["tools"]
+    monkeypatch.setitem(sys.modules, "tools.async_delegation", module)
+    monkeypatch.setattr(tools_module, "async_delegation", module, raising=False)
+    return state
+
+
+def test_current_turn_ordinary_drain_waits_for_durable_incorporation_before_consume(
+    monkeypatch,
+    tmp_path,
+):
+    """R2: ordinary source settlement follows incorporated receipt read-back."""
+    _configure_completion_recovery(monkeypatch, tmp_path)
+    session = Session(session_id="ordinary-current-turn", title="ordinary", profile="default")
+    session.save()
+    with config.LOCK:
+        config.SESSIONS[session.session_id] = session
+    registry = FakeProcessRegistry()
+    process_id = "proc-current-turn-incorporation"
+    registry.register(process_id, session.session_id)
+    install_fake_registry(monkeypatch, registry)
+    event = _completion_event(session.session_id, process_id)
+    event["origin_profile"] = "default"
+    event["completed_at"] = time.time()
+    registry.completion_queue.put(event)
+    active = {"value": True}
+    monkeypatch.setattr(bp, "_session_has_active_turn", lambda _sid: active["value"])
+    admissions, _real_routes_threading = _install_current_turn_route_harness(
+        monkeypatch,
+        tmp_path,
+    )
+
+    streaming._drain_webui_process_notifications(session.session_id)
+    deferred = config.DEFERRED_PROCESS_WAKEUPS.get(session.session_id, [])
+    sentinel = {
+        "consumed_after_drain": registry.is_completion_consumed(process_id),
+        "deferred_count": len(deferred),
+        "process_id": process_id,
+    }
+    print("CURRENT_TURN_ORDINARY_DRAIN_REACHED=" + json.dumps(sentinel, sort_keys=True))
+
+    # Baseline RED is this named post-drain boundary becoming true immediately.
+    assert registry.is_completion_consumed(process_id) is False
+    assert len(deferred) == 1
+    assert read_completion_delivery_receipt(
+        _completion_context(session.session_id, process_id, tmp_path),
+        session_dir=tmp_path,
+    ) is None
+
+    active["value"] = False
+    assert bp.drain_deferred_wakeups_for_session(session.session_id) == 1
+    context = _completion_context(session.session_id, process_id, tmp_path)
+    receipt = read_completion_delivery_receipt(context, session_dir=tmp_path)
+    assert receipt is not None
+    assert (receipt["state"], receipt["execution_state"]) == (
+        "incorporated",
+        "pending",
+    )
+    assert registry.is_completion_consumed(process_id) is True
+    assert len(admissions) == 1
+    metadata = completion_delivery_metadata(context)
+    persisted = json.loads((tmp_path / f"{session.session_id}.json").read_text(encoding="utf-8"))
+    assert len(
+        [row for row in persisted["messages"] if row.get("_completion_delivery") == metadata]
+    ) == 1
+    assert len(
+        [
+            row
+            for row in persisted["context_messages"]
+            if row.get("_completion_delivery") == metadata
+        ]
+    ) == 1
+    assert len(
+        [
+            row
+            for row in read_turn_journal(session.session_id, session_dir=tmp_path)["events"]
+            if row.get("_completion_delivery") == metadata
+        ]
+    ) == 1
+    routes._abort_prepared_chat_turn(
+        session,
+        admissions[0].stream_id,
+        admissions[0],
+    )
+
+
+@pytest.mark.parametrize("kind", ["process", "async_delegation"])
+def test_named_profile_current_turn_completion_restart_is_fully_isolated(
+    monkeypatch,
+    tmp_path,
+    kind,
+):
+    """R4: named-profile root/tip bytes are the only restart owner."""
+    _configure_completion_recovery(monkeypatch, tmp_path)
+    root = Session(
+        session_id=f"named-root-{kind}",
+        title="named root",
+        profile="named-profile",
+        pre_compression_snapshot=True,
+    )
+    root.save()
+    tip = Session(
+        session_id=f"named-tip-{kind}",
+        title="named tip",
+        profile="named-profile",
+        parent_session_id=root.session_id,
+    )
+    tip.save()
+    decoy = Session(
+        session_id=f"default-decoy-{kind}",
+        title="default decoy",
+        profile="default",
+    )
+    decoy.save()
+    with config.LOCK:
+        config.SESSIONS.update(
+            {root.session_id: root, tip.session_id: tip, decoy.session_id: decoy}
+        )
+
+    registry = FakeProcessRegistry()
+    source_state = None
+    if kind == "process":
+        completion_id = f"proc-named-{kind}"
+        event = _completion_event(root.session_id, completion_id)
+        event["process_id"] = completion_id
+    else:
+        completion_id = f"deleg-named-{kind}"
+        event = {
+            "type": "async_delegation",
+            "delegation_id": completion_id,
+            "session_key": root.session_id,
+            "status": "completed",
+            "is_batch": True,
+            "results": [{"task_index": 0, "status": "completed", "summary": "named"}],
+            "completed_at": time.time(),
+        }
+    event["origin_ui_session_id"] = root.session_id
+    event["origin_profile"] = "named-profile"
+    registry.register(completion_id, root.session_id)
+    install_fake_registry(monkeypatch, registry)
+    process_module = sys.modules["tools.process_registry"]
+    monkeypatch.setattr(
+        process_module,
+        "format_process_notification",
+        lambda evt: (
+            f"[ASYNC DELEGATION BATCH COMPLETE — {evt['delegation_id']}]\n"
+            "named completion"
+        ),
+        raising=False,
+    )
+    if kind == "async_delegation":
+        source_state = _install_current_turn_async_source(monkeypatch)
+    registry.completion_queue.put(event)
+    context = build_completion_delivery_context(event, tip.session_id, session_dir=tmp_path)
+    admissions, real_routes_threading = _install_current_turn_route_harness(
+        monkeypatch,
+        tmp_path,
+    )
+    monkeypatch.setattr(bp, "_session_has_active_turn", lambda _sid: False)
+
+    streaming._drain_webui_process_notifications(tip.session_id)
+    receipt = read_completion_delivery_receipt(context, session_dir=tmp_path)
+    print(
+        "NAMED_PROFILE_INCORPORATED_PENDING="
+        + json.dumps(
+            {
+                "completion_key": context.completion_key,
+                "kind": kind,
+                "receipt_state": None if receipt is None else receipt.get("state"),
+                "tip": context.delivery_session_id,
+            },
+            sort_keys=True,
+        )
+    )
+
+    # Baseline direct settlement reaches the sentinel but creates no durable row.
+    assert receipt is not None
+    assert (receipt["state"], receipt["execution_state"]) == (
+        "incorporated",
+        "pending",
+    )
+    assert context.root_session_id == root.session_id
+    assert context.delivery_session_id == tip.session_id
+    assert context.profile == "named-profile"
+    assert len(admissions) == 1
+    expected_prompt = bp.format_wakeup_prompt(event)
+    assert expected_prompt
+
+    release_turn_admission(admissions[0])
+    with config.LOCK:
+        config.SESSIONS.clear()
+    with config.ACTIVE_RUNS_LOCK:
+        config.ACTIVE_RUNS.clear()
+    with routes.STREAMS_LOCK:
+        routes.STREAMS.clear()
+    monkeypatch.setattr(bp, "_PROCESS_CHECKPOINT_RECOVERED", False)
+    monkeypatch.setattr(bp, "_PROCESS_RECOVERY_DONE", False)
+    monkeypatch.setattr(routes, "threading", real_routes_threading)
+    executions = []
+    finished = threading.Event()
+    _install_counting_completion_core(monkeypatch, executions, finished)
+
+    class RecoveryRegistry(FakeProcessRegistry):
+        def recover_from_checkpoint(self):
+            return 0
+
+        def list_sessions(self):
+            return []
+
+    recovery_registry = RecoveryRegistry()
+    install_fake_registry(monkeypatch, recovery_registry)
+    if kind == "async_delegation":
+        assert source_state is not None
+        tools_module = sys.modules["tools"]
+        async_module = types.ModuleType("tools.async_delegation")
+        async_module.get_durable_delegation = (  # type: ignore[attr-defined]
+            lambda _delegation_id: {"delivery_state": source_state["delivery_state"]}
+        )
+        monkeypatch.setitem(sys.modules, "tools.async_delegation", async_module)
+        monkeypatch.setattr(tools_module, "async_delegation", async_module, raising=False)
+
+    assert bp.recover_processes_for_webui(
+        recovery_registry,
+        lambda *_args, **_kwargs: None,
+    ) == 0
+    assert finished.wait(timeout=2)
+    print(
+        "NAMED_PROFILE_RESUME_REACHED="
+        + json.dumps(
+            {"executions": len(executions), "kind": kind, "profile": context.profile},
+            sort_keys=True,
+        )
+    )
+    assert executions == [
+        (tip.session_id, expected_prompt, context.correlation_id[:32])
+    ]
+    final_receipt = read_completion_delivery_receipt(context, session_dir=tmp_path)
+    assert final_receipt is not None
+    assert _wait_until(
+        lambda: (
+            read_completion_delivery_receipt(context, session_dir=tmp_path) or {}
+        ).get("execution_state")
+        == "delivered"
+    )
+    if kind == "process":
+        assert registry.is_completion_consumed(completion_id) is True
+    else:
+        assert source_state is not None
+        assert source_state["delivery_state"] == "delivered"
+        assert len(source_state["completions"]) == 1
+
+    metadata = completion_delivery_metadata(context)
+    tip_document = json.loads((tmp_path / f"{tip.session_id}.json").read_text(encoding="utf-8"))
+    root_document = json.loads((tmp_path / f"{root.session_id}.json").read_text(encoding="utf-8"))
+    decoy_document = json.loads((tmp_path / f"{decoy.session_id}.json").read_text(encoding="utf-8"))
+    assert len(
+        [row for row in tip_document["messages"] if row.get("_completion_delivery") == metadata]
+    ) == 1
+    assert len(
+        [
+            row
+            for row in tip_document["context_messages"]
+            if row.get("_completion_delivery") == metadata
+        ]
+    ) == 1
+    assert not [
+        row
+        for document in (root_document, decoy_document)
+        for row in document["messages"] + document["context_messages"]
+        if row.get("_completion_delivery") == metadata
+    ]
+    assert len(
+        [
+            row
+            for row in read_turn_journal(tip.session_id, session_dir=tmp_path)["events"]
+            if row.get("_completion_delivery") == metadata
+        ]
+    ) == 1
+
+    with config.LOCK:
+        config.SESSIONS.clear()
+    with config.ACTIVE_RUNS_LOCK:
+        config.ACTIVE_RUNS.clear()
+    with routes.STREAMS_LOCK:
+        routes.STREAMS.clear()
+    monkeypatch.setattr(bp, "_PROCESS_CHECKPOINT_RECOVERED", False)
+    monkeypatch.setattr(bp, "_PROCESS_RECOVERY_DONE", False)
+    assert bp.recover_processes_for_webui(
+        recovery_registry,
+        lambda *_args, **_kwargs: None,
+    ) == 0
+    assert len(executions) == 1

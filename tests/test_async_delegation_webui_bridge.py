@@ -27,8 +27,11 @@ from api import streaming
 from api.models import Session
 from api.session_lineage import (
     build_completion_delivery_context,
+    completion_delivery_metadata,
     read_completion_delivery_receipt,
+    release_turn_admission,
 )
+from api.turn_journal import read_turn_journal
 
 
 class _NoopLock:
@@ -1394,5 +1397,189 @@ def test_async_ack_follows_incorporated_receipt_and_restart_does_not_replay(
         admission_box["admission"].stream_id,
         admission_box["admission"],
     )
+
+
+def test_current_turn_async_drain_crash_restart_executes_once_via_receipt(
+    monkeypatch,
+    tmp_path,
+):
+    """R1: a current-turn pop is not an ACK or a substitute for a receipt."""
+    from tests.test_background_process_restart_recovery import (
+        _configure_completion_recovery,
+        _install_counting_completion_core,
+    )
+
+    _reset_wakeup_state()
+    _configure_completion_recovery(monkeypatch, tmp_path)
+    registry = _install_fake_process_registry(monkeypatch)
+    delivery = _install_fake_durable_delivery_api(monkeypatch)
+    session = Session(
+        session_id="current-turn-async",
+        title="current-turn async",
+        profile="default",
+    )
+    session.save()
+    with cfg.LOCK:
+        cfg.SESSIONS[session.session_id] = session
+
+    event = _async_delegation_event(
+        delegation_id="deleg_current_turn_restart",
+        session_key=session.session_id,
+        origin_ui_session_id=session.session_id,
+        origin_profile="default",
+    )
+    registry.completion_queue.put(event)
+    context = build_completion_delivery_context(
+        event,
+        session.session_id,
+        session_dir=tmp_path,
+    )
+    admissions = []
+    real_routes_threading = routes.threading
+
+    class ImmediateThread:
+        def __init__(self, *args, target=None, **kwargs):
+            self.target = target
+            self.args = kwargs.pop("args", ())
+            self.kwargs = kwargs.pop("kwargs", {})
+
+        def start(self):
+            assert self.target is not None
+            self.target(*self.args, **self.kwargs)
+
+    class ParkedThread:
+        def __init__(self, *_args, **kwargs):
+            admissions.append(kwargs["kwargs"]["admission"])
+
+        def start(self):
+            admissions[-1].admitted.set()
+
+    bp_threading = types.SimpleNamespace(**vars(bp.threading))
+    bp_threading.Thread = ImmediateThread
+    routes_threading = types.SimpleNamespace(**vars(routes.threading))
+    routes_threading.Thread = ParkedThread
+    monkeypatch.setattr(bp, "threading", bp_threading)
+    monkeypatch.setattr(routes, "threading", routes_threading)
+    monkeypatch.setattr(bp, "_session_has_active_turn", lambda _sid: False)
+    monkeypatch.setattr(bp, "_emit_bg_task_complete_events_coalesced", lambda *_a: 0)
+    monkeypatch.setattr(routes, "_agent_runtime_barrier_response", lambda **_k: None)
+    monkeypatch.setattr(routes, "_read_profile_model_config", lambda *_a, **_k: (None, None, {}))
+    monkeypatch.setattr(
+        routes,
+        "_resolve_chat_workspace_with_recovery",
+        lambda _session, _requested: str(tmp_path),
+    )
+    monkeypatch.setattr(
+        routes,
+        "_resolve_compatible_session_model_state",
+        lambda *_a, **_k: ("test-model", None, False),
+    )
+    monkeypatch.setattr(routes, "create_stream_channel", queue.Queue)
+    monkeypatch.setattr(routes, "get_webui_session_save_mode", lambda: "deferred")
+    monkeypatch.setattr(routes, "publish_session_list_changed", lambda *_a, **_k: None)
+    monkeypatch.setattr(routes, "set_last_workspace", lambda _workspace: None)
+    monkeypatch.setattr(routes, "webui_gateway_chat_enabled", lambda _cfg: False)
+
+    streaming._drain_webui_process_notifications(session.session_id)
+    print(
+        "CURRENT_TURN_ASYNC_DRAIN_REACHED="
+        + json.dumps(
+            {
+                "completion_key": context.completion_key,
+                "delivery_state": delivery["delivery_state"],
+                "queue_size": registry.completion_queue.qsize(),
+            },
+            sort_keys=True,
+        )
+    )
+
+    # Simulate the crash: only receipt/sidecar/journal bytes survive.
+    assert len(admissions) == 1
+    release_turn_admission(admissions[0])
+    with cfg.LOCK:
+        cfg.SESSIONS.clear()
+    with cfg.ACTIVE_RUNS_LOCK:
+        cfg.ACTIVE_RUNS.clear()
+    with routes.STREAMS_LOCK:
+        routes.STREAMS.clear()
+    monkeypatch.setattr(bp, "_PROCESS_CHECKPOINT_RECOVERED", False)
+    monkeypatch.setattr(bp, "_PROCESS_RECOVERY_DONE", False)
+    monkeypatch.setattr(routes, "threading", real_routes_threading)
+    executions = []
+    finished = threading.Event()
+    _install_counting_completion_core(monkeypatch, executions, finished)
+
+    class RecoveryRegistry(_FakeProcessRegistry):
+        def recover_from_checkpoint(self):
+            return 0
+
+        def list_sessions(self):
+            return []
+
+    recovery_registry = RecoveryRegistry()
+    _install_fake_process_registry(monkeypatch)
+    fake_process_mod = sys.modules["tools.process_registry"]
+    fake_process_mod.process_registry = recovery_registry
+    assert bp.recover_processes_for_webui(
+        recovery_registry,
+        lambda *_args, **_kwargs: None,
+    ) == 0
+
+    # Baseline reaches the named drain sentinel but has no receipt to resume,
+    # so this is a behavioral RED (provider count 0), never a harness error.
+    assert finished.wait(timeout=2)
+    assert executions == [
+        (
+            session.session_id,
+            bp.format_wakeup_prompt(event),
+            context.correlation_id[:32],
+        )
+    ]
+    receipt = read_completion_delivery_receipt(context, session_dir=tmp_path)
+    assert receipt is not None
+    assert _wait_until(
+        lambda: (
+            read_completion_delivery_receipt(context, session_dir=tmp_path) or {}
+        ).get("execution_state")
+        == "delivered"
+    )
+    assert delivery["delivery_state"] == "delivered"
+    assert len(delivery["complete"]) == 1
+
+    metadata = completion_delivery_metadata(context)
+    persisted = json.loads(
+        (tmp_path / f"{session.session_id}.json").read_text(encoding="utf-8")
+    )
+    assert len(
+        [row for row in persisted["messages"] if row.get("_completion_delivery") == metadata]
+    ) == 1
+    assert len(
+        [
+            row
+            for row in persisted["context_messages"]
+            if row.get("_completion_delivery") == metadata
+        ]
+    ) == 1
+    assert len(
+        [
+            row
+            for row in read_turn_journal(session.session_id, session_dir=tmp_path)["events"]
+            if row.get("_completion_delivery") == metadata
+        ]
+    ) == 1
+
+    with cfg.LOCK:
+        cfg.SESSIONS.clear()
+    with cfg.ACTIVE_RUNS_LOCK:
+        cfg.ACTIVE_RUNS.clear()
+    with routes.STREAMS_LOCK:
+        routes.STREAMS.clear()
+    monkeypatch.setattr(bp, "_PROCESS_CHECKPOINT_RECOVERED", False)
+    monkeypatch.setattr(bp, "_PROCESS_RECOVERY_DONE", False)
+    assert bp.recover_processes_for_webui(
+        recovery_registry,
+        lambda *_args, **_kwargs: None,
+    ) == 0
+    assert len(executions) == 1
 
 
