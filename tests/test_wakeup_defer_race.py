@@ -281,18 +281,16 @@ def test_idle_completion_still_fires_once(monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# Test 3 — idempotent with the PR #2279 next-turn drain: a user turn that
-# DOES come must not also deliver (shared SEEN / _completion_consumed gate)
+# Test 3 — current-turn physical fallback and teardown share one canonical
+# owner: a user turn that DOES come must not duplicate deferred delivery
 # --------------------------------------------------------------------------
 
 
 def test_next_user_turn_drain_and_teardown_hook_dont_double_fire(monkeypatch):
-    """If a user turn DOES come, the next-turn drain
-    (_drain_webui_process_notifications) must NOT also deliver the deferred
-    completion: _process_one set BG_TASK_COMPLETE_EVENTS_SEEN AND the registry
-    _completion_consumed marker BEFORE the defer, and it consumed the
-    completion_queue event, so the next-turn drain has nothing to fire. The
-    teardown idle-hook then delivers it exactly once. Total deliveries == 1.
+    """A duplicate physical event may reach the current-turn fallback, but it
+    is handed to the same ``_process_one`` owner whose preincorporation claim
+    already owns the deferred attempt. The fallback returns no text and does
+    not settle source state. The teardown/idle lane delivers exactly once.
     """
     from api import background_process as bp, config as cfg
     from api import streaming as st
@@ -316,14 +314,12 @@ def test_next_user_turn_drain_and_teardown_hook_dont_double_fire(monkeypatch):
         assert not fake.is_completion_consumed("proc-shared-1")
         assert sid in cfg.DEFERRED_PROCESS_WAKEUPS
 
-        # A user turn comes: the next-turn drain runs. Even if a duplicate
-        # event were re-queued (kill_process race), the SEEN + consumed gate
-        # makes it a no-op — it must NOT deliver the deferred wakeup.
+        # A user turn comes: the current-turn physical fallback runs. Even if a
+        # duplicate event was requeued, canonical _process_one's active claim
+        # makes the handoff a no-op; the fallback itself returns no text.
         fake.completion_queue.put(_completion_evt("proc-shared-1", sid))
-        notifications = st._drain_webui_process_notifications(sid)
-        assert notifications == [], (
-            "next-turn drain double-delivered a completion the defer path owns"
-        )
+        assert st._drain_webui_process_notifications(sid) is None
+        assert not fake.is_completion_consumed("proc-shared-1")
 
         # That user turn ends → its teardown fires the deferred wakeup ONCE.
         cfg.unregister_active_run(stream_id)
@@ -332,7 +328,7 @@ def test_next_user_turn_drain_and_teardown_hook_dont_double_fire(monkeypatch):
         assert _wait_for_wakeup(holder)
         assert fake.is_completion_consumed("proc-shared-1")
         assert len(holder["calls"]) == 1, (
-            "deferred wakeup delivered more than once across next-turn drain "
+            "deferred wakeup delivered more than once across current-turn handoff "
             "+ teardown hook"
         )
     finally:
@@ -460,8 +456,8 @@ def test_multistream_guard_only_fires_when_truly_idle(monkeypatch):
 def test_teardown_409_requeues_wakeup_so_it_is_not_lost(monkeypatch):
     """drain_deferred_wakeups_for_session claims the entry + discards the
     PENDING marker, then the spawned wakeup turn 409s on a racing human turn.
-    The 409 branch must re-queue via record_deferred_wakeup so a later teardown
-    (or next-turn drain) redelivers it. Without the fix the wakeup is dropped.
+    The 409 branch must re-queue via record_deferred_wakeup so a later
+    last-active teardown redelivers it. Without the fix the wakeup is dropped.
     """
     from api import background_process as bp, config as cfg
 

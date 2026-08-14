@@ -2,6 +2,7 @@ import ast
 from pathlib import Path
 import json
 import queue
+import re
 import sys
 import threading
 import time
@@ -25,24 +26,27 @@ def test_webui_drains_only_matching_background_completion_events():
     src = Path("api/streaming.py").read_text(encoding="utf-8")
 
     assert "def _drain_webui_process_notifications(" in src
-    assert "pending_async_acceptances: list | None = None" in src
+    assert ") -> None:" in src
+    assert "pending_async_acceptances" not in src
     assert "from tools.process_registry import process_registry" in src
     assert "proc = process_registry.get(evt_sid)" in src
-    assert "def _completion_event_targets_webui_session(evt_session_key: str, session_id: str)" in src
-    assert "PROCESS_SESSION_INDEX.get(evt_session_key) == session_id" in src
-    assert "not _completion_event_targets_webui_session(evt_session_key, session_id)" in src
+    assert "def _completion_event_matches_webui_lineage(" in src
+    assert "current_before = resolve_session_lineage(" in src
+    assert "before_identity == after_identity == origin_identity" in src
+    assert "scan_budget = completion_queue.qsize()" in src
     assert "skipped_events.append(evt)" in src
     assert "completion_queue.put(evt)" in src
+    assert src.index("for evt in skipped_events:") < src.index("_process_one(evt)")
 
 
-def test_webui_injects_process_notifications_without_persisting_them_as_user_text():
+def test_current_human_turn_remains_human_only_and_fresh_completion_uses_canonical_owner():
     src = Path("api/streaming.py").read_text(encoding="utf-8")
 
-    assert "_process_notifications = _drain_webui_process_notifications(" in src
-    assert "pending_async_acceptances=_pending_async_acceptances" in src
-    assert "_accept_pending_async_delegations(" in src
-    assert "[*_process_notifications, msg_text]" in src
-    assert "_build_native_multimodal_message(workspace_ctx, _agent_msg_text" in src
+    assert "_drain_webui_process_notifications(session_id)" in src
+    assert "_process_notifications =" not in src
+    assert "_agent_msg_text" not in src
+    assert "_accept_pending_async_delegations" not in src
+    assert "_build_native_multimodal_message(workspace_ctx, msg_text" in src
     assert "persist_user_message=msg_text" in src
 
 
@@ -57,7 +61,7 @@ def test_webui_sets_gateway_session_platform_for_background_watchers():
 
 def test_webui_age_gates_stale_background_completion_events():
     """Issue #4029: drain must drop completions older than the configured cap
-    so stale notifications can't be prepended to an unrelated later turn."""
+    so stale work cannot start an unrelated later server turn."""
     src = Path("api/streaming.py").read_text(encoding="utf-8")
 
     # The age-gate helper + its env override exist.
@@ -72,6 +76,15 @@ def test_webui_age_gates_stale_background_completion_events():
     # their durable delivery claim. Neither path is added to skipped_events.
     assert "_mark_process_completion_consumed(process_registry, evt_sid)" in src
     assert "complete_async_delegation_delivery(evt, claim)" in src
+    assert src.index("if is_stale and is_async_delegation:") < src.index(
+        "complete_async_delegation_delivery(evt, claim)"
+    )
+    assert src.index("if is_stale:", src.index("canonical_handoffs")) < src.index(
+        "_mark_process_completion_consumed(process_registry, evt_sid)"
+    )
+    assert src.index("_mark_process_completion_consumed(process_registry, evt_sid)") < src.index(
+        "canonical_handoffs.append(evt)"
+    )
 
 
 def test_drain_orders_converge_on_one_completion(monkeypatch, tmp_path):
@@ -463,3 +476,73 @@ def test_current_turn_handoff_static_owner_and_order_contract():
     assert "_agent_msg_text" not in source
     assert "_build_native_multimodal_message(workspace_ctx, msg_text" in source
     assert "persist_user_message=msg_text" in source
+
+
+def test_live_owner_wording_names_the_canonical_post_state_contract():
+    def symbol_source(path: str, symbol: str) -> str:
+        source = Path(path).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        [node] = [
+            item
+            for item in tree.body
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and item.name == symbol
+        ]
+        return ast.get_source_segment(source, node) or ""
+
+    regions = [
+        symbol_source("api/background_process.py", "record_deferred_wakeup"),
+        symbol_source("api/background_process.py", "claim_deferred_wakeups"),
+        symbol_source("api/background_process.py", "drain_deferred_wakeups_for_session"),
+        symbol_source("api/background_process.py", "_start_server_side_wakeup_turn"),
+        symbol_source("api/routes.py", "_start_chat_stream_for_session"),
+        symbol_source("api/routes.py", "start_session_turn"),
+        symbol_source("api/routes.py", "_handle_bg_task_complete_ack"),
+        symbol_source(
+            "tests/test_session_channel_option_x.py",
+            "test_server_side_wakeup_deferred_when_turn_active",
+        ),
+        symbol_source(
+            "tests/test_wakeup_defer_race.py",
+            "test_next_user_turn_drain_and_teardown_hook_dont_double_fire",
+        ),
+        symbol_source(
+            "tests/test_wakeup_defer_race.py",
+            "test_teardown_409_requeues_wakeup_so_it_is_not_lost",
+        ),
+        symbol_source(
+            "tests/test_bg_task_complete_ab_coexistence.py",
+            "test_a_drain_first_marks_seen_so_b_would_skip",
+        ),
+        symbol_source(
+            "tests/test_async_delegation_webui_bridge.py",
+            "test_next_turn_drain_respects_origin_over_session_key_index",
+        ),
+    ]
+    live = "\n".join(regions).lower()
+    assert re.search(
+        r"(?:next-turn drain|pr #2279).{0,100}"
+        r"(?:claim|deliver|redeliver|fire|format|ack|consume|owner)",
+        live,
+    ) is None
+    assert "pending marker delivers" not in live
+    assert "fallback claims the deferred map" not in live
+
+    streaming_source = Path("api/streaming.py").read_text(encoding="utf-8")
+    background_source = Path("api/background_process.py").read_text(encoding="utf-8")
+    session_channel_source = Path("tests/test_session_channel_option_x.py").read_text(
+        encoding="utf-8"
+    )
+    assert "physical dequeue/handoff" in streaming_source
+    assert "durable incorporation callback" in background_source
+    assert "teardown/idle lane; PENDING_BG_TASK_COMPLETIONS is telemetry only" in (
+        session_channel_source
+    )
+
+    # Historical root-cause regions are deliberately outside the live scan.
+    config_source = Path("api/config.py").read_text(encoding="utf-8")
+    wakeup_source = Path("tests/test_wakeup_defer_race.py").read_text(encoding="utf-8")
+    assert "the only consumer (PR #2279 next-turn" in config_source
+    assert "The only consumer of that bare flag was the PR #2279 next-turn drain" in (
+        wakeup_source
+    )

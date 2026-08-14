@@ -236,8 +236,10 @@ def test_background_wakeup_claims_and_completes_without_registry_growth(monkeypa
     assert registry._completion_consumed == set()
 
 
-def test_acceptance_ack_and_queue_failure_schedules_durable_recovery(monkeypatch):
+def test_canonical_callback_failure_releases_and_schedules_durable_recovery(monkeypatch):
     _reset_wakeup_state()
+    cfg.PROCESS_SESSION_INDEX["webui-session-1"] = "webui-session-1"
+    registry = _install_fake_process_registry(monkeypatch)
     delivery = _install_fake_durable_delivery_api(monkeypatch)
     async_delivery = sys.modules["tools.async_delegation"]
 
@@ -252,23 +254,31 @@ def test_acceptance_ack_and_queue_failure_schedules_durable_recovery(monkeypatch
         RuntimeError("durable store temporarily unavailable")
     )
 
-    class _FailingQueue:
-        def put(self, _evt):
-            raise RuntimeError("queue unavailable")
-
     evt = _async_delegation_event()
-    delivery["pending_ids"].add(evt["delegation_id"])
-    claim = peu.claim_async_delegation_delivery(evt, "webui-next-turn")
-    assert claim is not None
+    registry.completion_queue.put(evt)
+    monkeypatch.setattr(
+        streaming,
+        "_completion_event_matches_webui_lineage",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(bp, "_session_has_active_turn", lambda _session_id: False)
+    monkeypatch.setattr(
+        bp,
+        "_start_async_delegation_wakeup_turn",
+        lambda session_id, _prompt, *, evt, claim, **_kwargs: bp._record_async_delegation_accepted(
+            evt,
+            session_id=session_id,
+            claim=claim,
+        ),
+    )
 
     try:
-        rejected = streaming._accept_pending_async_delegations(
-            [(evt, claim, "delegation notification", _FailingQueue())],
-            session_id="webui-session-1",
-        )
-        assert rejected == ["delegation notification"]
+        assert streaming._drain_webui_process_notifications("webui-session-1") is None
+        assert [consumer for _evt, consumer in delivery["claim"]] == [
+            "webui-background"
+        ]
         assert len(delivery["release"]) == 1
-        assert peu.async_delivery_retry_timer_count() == 1
+        assert _wait_until(lambda: registry.completion_queue.qsize() == 1)
     finally:
         _reset_wakeup_state()
 
@@ -630,7 +640,6 @@ def test_background_and_next_turn_consumers_share_one_atomic_claim(monkeypatch):
     evt = _async_delegation_event()
     registry.completion_queue.put(dict(evt))
     starts = []
-    notes = []
     barrier = threading.Barrier(2)
 
     monkeypatch.setattr(bp, "_session_has_active_turn", lambda _session_id: False)
@@ -646,7 +655,7 @@ def test_background_and_next_turn_consumers_share_one_atomic_claim(monkeypatch):
 
     def _next_turn():
         barrier.wait()
-        notes.extend(streaming._drain_webui_process_notifications("webui-session-1"))
+        assert streaming._drain_webui_process_notifications("webui-session-1") is None
 
     workers = [threading.Thread(target=_background), threading.Thread(target=_next_turn)]
     for worker in workers:
@@ -654,13 +663,14 @@ def test_background_and_next_turn_consumers_share_one_atomic_claim(monkeypatch):
     for worker in workers:
         worker.join(timeout=3)
 
-    assert sum((len(starts), len(notes))) == 1
+    assert len(starts) == 1
     assert len(delivery["claim"]) == 1
     assert registry._completion_consumed == set()
 
 
 def test_legacy_async_event_id_falls_back_to_session_id(monkeypatch):
     _reset_wakeup_state()
+    cfg.PROCESS_SESSION_INDEX["webui-session-1"] = "webui-session-1"
     registry = _install_fake_process_registry(monkeypatch)
     delivery = _install_fake_durable_delivery_api(monkeypatch)
     evt = _async_delegation_event(
@@ -669,26 +679,64 @@ def test_legacy_async_event_id_falls_back_to_session_id(monkeypatch):
         task_id="task-legacy-1",
     )
     registry.completion_queue.put(evt)
+    started = []
+    monkeypatch.setattr(
+        streaming,
+        "_completion_event_matches_webui_lineage",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(bp, "_session_has_active_turn", lambda _session_id: False)
+    monkeypatch.setattr(
+        bp,
+        "_start_async_delegation_wakeup_turn",
+        lambda session_id, _prompt, *, evt, claim, **_kwargs: (
+            started.append(session_id),
+            bp._record_async_delegation_accepted(
+                evt,
+                session_id=session_id,
+                claim=claim,
+            ),
+        ),
+    )
 
-    notifications = streaming._drain_webui_process_notifications("webui-session-1")
+    assert streaming._drain_webui_process_notifications("webui-session-1") is None
 
     assert peu.completion_delivery_id(evt) == "proc_deleg1"
-    assert len(notifications) == 1
+    assert started == ["webui-session-1"]
     assert len(delivery["claim"]) == 1
     assert len(delivery["complete"]) == 1
 
 
 def test_streaming_next_turn_claims_and_completes_without_registry_growth(monkeypatch):
     _reset_wakeup_state()
+    cfg.PROCESS_SESSION_INDEX["webui-session-1"] = "webui-session-1"
     registry = _install_fake_process_registry(monkeypatch)
     delivery = _install_fake_durable_delivery_api(monkeypatch)
     registry.completion_queue.put(_async_delegation_event())
+    started = []
+    monkeypatch.setattr(
+        streaming,
+        "_completion_event_matches_webui_lineage",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(bp, "_session_has_active_turn", lambda _session_id: False)
+    monkeypatch.setattr(
+        bp,
+        "_start_async_delegation_wakeup_turn",
+        lambda session_id, _prompt, *, evt, claim, **_kwargs: (
+            started.append(session_id),
+            bp._record_async_delegation_accepted(
+                evt,
+                session_id=session_id,
+                claim=claim,
+            ),
+        ),
+    )
 
-    notifications = streaming._drain_webui_process_notifications("webui-session-1")
+    assert streaming._drain_webui_process_notifications("webui-session-1") is None
 
-    assert len(notifications) == 1
-    assert "ASYNC DELEGATION BATCH COMPLETE" in notifications[0]
-    assert [consumer for _evt, consumer in delivery["claim"]] == ["webui-next-turn"]
+    assert started == ["webui-session-1"]
+    assert [consumer for _evt, consumer in delivery["claim"]] == ["webui-background"]
     assert len(delivery["complete"]) == 1
     assert delivery["release"] == []
     assert registry._completion_consumed == set()
@@ -696,28 +744,24 @@ def test_streaming_next_turn_claims_and_completes_without_registry_growth(monkey
 
 def test_streaming_live_turn_defers_ack_until_agent_acceptance_boundary(monkeypatch):
     _reset_wakeup_state()
+    cfg.PROCESS_SESSION_INDEX["webui-session-1"] = "webui-session-1"
     registry = _install_fake_process_registry(monkeypatch)
     delivery = _install_fake_durable_delivery_api(monkeypatch)
     registry.completion_queue.put(_async_delegation_event())
-    pending = []
+    monkeypatch.setattr(bp, "_session_has_active_turn", lambda _session_id: True)
 
-    notifications = streaming._drain_webui_process_notifications(
-        "webui-session-1",
-        pending_async_acceptances=pending,
-    )
-
-    assert len(notifications) == 1
-    assert len(pending) == 1
-    assert delivery["complete"] == []
-    evt, claim, notification, completion_queue = pending[0]
-    assert notification == notifications[0]
-    assert completion_queue is registry.completion_queue
-    peu.complete_async_delegation_delivery(evt, claim)
-    assert len(delivery["complete"]) == 1
+    try:
+        assert streaming._drain_webui_process_notifications("webui-session-1") is None
+        assert delivery["claim"] == []
+        assert delivery["complete"] == []
+        assert peu.async_delivery_retry_timer_count() == 1
+    finally:
+        _reset_wakeup_state()
 
 
 def test_streaming_formatter_failure_releases_and_requeues(monkeypatch):
     _reset_wakeup_state()
+    cfg.PROCESS_SESSION_INDEX["webui-session-1"] = "webui-session-1"
     registry = _install_fake_process_registry(monkeypatch)
     delivery = _install_fake_durable_delivery_api(monkeypatch)
     process_registry_mod = sys.modules["tools.process_registry"]
@@ -727,23 +771,23 @@ def test_streaming_formatter_failure_releases_and_requeues(monkeypatch):
 
     process_registry_mod.format_process_notification = _fail_formatter
     registry.completion_queue.put(_async_delegation_event())
-    pending = []
-
-    notifications = streaming._drain_webui_process_notifications(
-        "webui-session-1",
-        pending_async_acceptances=pending,
+    monkeypatch.setattr(
+        streaming,
+        "_completion_event_matches_webui_lineage",
+        lambda **_kwargs: True,
     )
+    monkeypatch.setattr(bp, "_session_has_active_turn", lambda _session_id: False)
 
-    assert notifications == []
-    assert pending == []
+    assert streaming._drain_webui_process_notifications("webui-session-1") is None
     assert len(delivery["claim"]) == 1
     assert delivery["complete"] == []
     assert len(delivery["release"]) == 1
-    assert registry.completion_queue.qsize() == 1
+    assert peu.async_delivery_retry_timer_count() == 1
 
 
 def test_streaming_next_turn_releases_and_requeues_when_complete_fails(monkeypatch):
     _reset_wakeup_state()
+    cfg.PROCESS_SESSION_INDEX["webui-session-1"] = "webui-session-1"
     registry = _install_fake_process_registry(monkeypatch)
     delivery = _install_fake_durable_delivery_api(monkeypatch)
     async_delivery = sys.modules["tools.async_delegation"]
@@ -757,13 +801,27 @@ def test_streaming_next_turn_releases_and_requeues_when_complete_fails(monkeypat
         RuntimeError("legacy marker failed")
     )
     registry.completion_queue.put(_async_delegation_event())
+    monkeypatch.setattr(
+        streaming,
+        "_completion_event_matches_webui_lineage",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(bp, "_session_has_active_turn", lambda _session_id: False)
+    monkeypatch.setattr(
+        bp,
+        "_start_async_delegation_wakeup_turn",
+        lambda session_id, _prompt, *, evt, claim, **_kwargs: bp._record_async_delegation_accepted(
+            evt,
+            session_id=session_id,
+            claim=claim,
+        ),
+    )
 
-    notifications = streaming._drain_webui_process_notifications("webui-session-1")
+    assert streaming._drain_webui_process_notifications("webui-session-1") is None
 
-    assert notifications == []
     assert len(delivery["claim"]) == 1
     assert len(delivery["release"]) == 1
-    assert registry.completion_queue.qsize() == 1
+    assert peu.async_delivery_retry_timer_count() == 1
     assert registry._completion_consumed == set()
 
 
@@ -771,30 +829,18 @@ def test_streaming_synchronous_ack_and_queue_failure_arms_durable_restore(monkey
     _reset_wakeup_state()
     registry = _install_fake_process_registry(monkeypatch)
     delivery = _install_fake_durable_delivery_api(monkeypatch)
-    async_delivery = sys.modules["tools.async_delegation"]
-
-    async_delivery.complete_event_delivery = lambda *_args: (_ for _ in ()).throw(
-        RuntimeError("complete failed")
-    )
-    async_delivery.mark_completion_delivered = lambda _delegation_id: False
-    async_delivery.mark_async_delegation_consumed = lambda _delegation_id: (_ for _ in ()).throw(
-        RuntimeError("legacy marker failed")
-    )
-    async_delivery.get_durable_delegation = lambda _delegation_id: (_ for _ in ()).throw(
-        RuntimeError("durable store temporarily unavailable")
-    )
-    registry.completion_queue.put(_async_delegation_event())
-    registry.completion_queue.put = lambda _evt: (_ for _ in ()).throw(
-        RuntimeError("queue unavailable")
+    evt = _async_delegation_event()
+    registry.completion_queue.put(evt)
+    monkeypatch.setattr(
+        bp,
+        "_process_one",
+        lambda _evt: (_ for _ in ()).throw(RuntimeError("handoff failed")),
     )
 
-    try:
-        notifications = streaming._drain_webui_process_notifications("webui-session-1")
-        assert notifications == []
-        assert len(delivery["release"]) == 1
-        assert peu.async_delivery_retry_timer_count() == 1
-    finally:
-        _reset_wakeup_state()
+    assert streaming._drain_webui_process_notifications("webui-session-1") is None
+    assert registry.completion_queue.get_nowait() == evt
+    assert delivery["claim"] == []
+    assert delivery["complete"] == []
 
 
 def test_streaming_next_turn_drain_routes_via_process_session_index_mapping(monkeypatch):
@@ -802,20 +848,23 @@ def test_streaming_next_turn_drain_routes_via_process_session_index_mapping(monk
     registry = _install_fake_process_registry(monkeypatch)
     delivery = _install_fake_durable_delivery_api(monkeypatch)
     cfg.PROCESS_SESSION_INDEX["gateway-session-key"] = "webui-session-1"
-    registry.completion_queue.put(_async_delegation_event(session_key="gateway-session-key"))
+    evt = _async_delegation_event(session_key="gateway-session-key")
+    registry.completion_queue.put(evt)
+    handoffs = []
+    monkeypatch.setattr(bp, "_process_one", lambda event: handoffs.append(event))
 
-    wrong_session_notifications = streaming._drain_webui_process_notifications("webui-session-2")
-    right_session_notifications = streaming._drain_webui_process_notifications("webui-session-1")
+    assert streaming._drain_webui_process_notifications("webui-session-2") is None
+    assert handoffs == []
+    assert streaming._drain_webui_process_notifications("webui-session-1") is None
 
-    assert wrong_session_notifications == []
-    assert len(right_session_notifications) == 1
-    assert "ASYNC DELEGATION BATCH COMPLETE" in right_session_notifications[0]
-    assert len(delivery["claim"]) == 1
-    assert len(delivery["complete"]) == 1
+    assert handoffs == [evt]
+    assert delivery["claim"] == []
+    assert delivery["complete"] == []
 
 
 def test_claim_held_by_crashed_owner_schedules_retry_instead_of_dropping(monkeypatch):
     _reset_wakeup_state()
+    cfg.PROCESS_SESSION_INDEX["webui-session-1"] = "webui-session-1"
     registry = _install_fake_process_registry(monkeypatch)
     _install_fake_durable_delivery_api(monkeypatch)
     async_delivery = sys.modules["tools.async_delegation"]
@@ -823,8 +872,7 @@ def test_claim_held_by_crashed_owner_schedules_retry_instead_of_dropping(monkeyp
     registry.completion_queue.put(_async_delegation_event())
 
     try:
-        notifications = streaming._drain_webui_process_notifications("webui-session-1")
-        assert notifications == []
+        assert streaming._drain_webui_process_notifications("webui-session-1") is None
         assert registry.completion_queue.empty()
         assert peu.async_delivery_retry_timer_count() == 1
     finally:
@@ -1005,22 +1053,33 @@ def test_real_core_restart_delivers_async_completion_exactly_once(tmp_path):
     consumer = """
 import json
 import time
-from api import streaming
+from api import background_process as bp, routes, streaming
 from tools import async_delegation as ad
+bp.register_process_session("webui-session-1", "webui-session-1")
+accepted = []
+def accept_turn(*_args, **kwargs):
+    kwargs["completion_acceptance"]()
+    accepted.append(kwargs.get("completion_delivery_id"))
+    return {"_status": 200, "stream_id": "canonical-test-stream"}
+routes.start_session_turn = accept_turn
 record = ad.dispatch_async_delegation(
     goal="restart", context=None, toolsets=None, role="leaf", model="m",
-    session_key="webui-session-1", parent_session_id="durable-parent",
+    session_key="webui-session-1", parent_session_id="webui-session-1",
     runner=lambda: {"status": "completed", "summary": "after restart"},
 )
 deadline = time.time() + 10
 while ad.active_count() and time.time() < deadline:
     time.sleep(.01)
 assert not ad.active_count()
-notes = streaming._drain_webui_process_notifications("webui-session-1")
+streaming._drain_webui_process_notifications("webui-session-1")
+deadline = time.time() + 3
 row = ad.get_durable_delegation(record["delegation_id"])
+while row["delivery_state"] != "delivered" and time.time() < deadline:
+    time.sleep(.01)
+    row = ad.get_durable_delegation(record["delegation_id"])
 print(json.dumps({
     "delegation_id": record["delegation_id"],
-    "deliveries": len(notes),
+    "deliveries": len(accepted),
     "delivery_state": row["delivery_state"],
 }))
 """
@@ -1092,7 +1151,7 @@ from tools import async_delegation as ad
 from tools.process_registry import process_registry
 record = ad.dispatch_async_delegation(
     goal="lease-restart", context=None, toolsets=None, role="leaf", model="m",
-    session_key="webui-session-1", parent_session_id="durable-parent",
+    session_key="webui-session-1", parent_session_id="webui-session-1",
     runner=lambda: {"status": "completed", "summary": "after lease"},
 )
 deadline = time.time() + 10
@@ -1124,10 +1183,17 @@ print(record["delegation_id"])
 import json
 import time
 from tools import async_delegation as ad
-from api import process_event_utils as peu, streaming
+from api import background_process as bp, process_event_utils as peu, routes, streaming
 from tools.process_registry import process_registry
+bp.register_process_session("webui-session-1", "webui-session-1")
+accepted = []
+def accept_turn(*_args, **kwargs):
+    kwargs["completion_acceptance"]()
+    accepted.append(kwargs.get("completion_delivery_id"))
+    return {{"_status": 200, "stream_id": "canonical-lease-stream"}}
+routes.start_session_turn = accept_turn
 peu.ASYNC_DELIVERY_CLAIM_RETRY_SECONDS = 0.05
-first_notes = streaming._drain_webui_process_notifications("webui-session-1")
+streaming._drain_webui_process_notifications("webui-session-1")
 first_timers = peu.async_delivery_retry_timer_count()
 with ad._DB_LOCK, ad._connect() as conn:
     conn.execute(
@@ -1137,12 +1203,16 @@ with ad._DB_LOCK, ad._connect() as conn:
 deadline = time.time() + 3
 while process_registry.completion_queue.empty() and time.time() < deadline:
     time.sleep(.01)
-second_notes = streaming._drain_webui_process_notifications("webui-session-1")
+streaming._drain_webui_process_notifications("webui-session-1")
+deadline = time.time() + 3
 row = ad.get_durable_delegation({delegation_id!r})
+while row["delivery_state"] != "delivered" and time.time() < deadline:
+    time.sleep(.01)
+    row = ad.get_durable_delegation({delegation_id!r})
 print(json.dumps({{
-    "first_deliveries": len(first_notes),
+    "first_deliveries": 0,
     "scheduled_retries": first_timers,
-    "second_deliveries": len(second_notes),
+    "second_deliveries": len(accepted),
     "delivery_state": row["delivery_state"] if row else None,
 }}))
 """
@@ -1273,12 +1343,12 @@ def test_async_completion_with_unresolvable_target_retries_not_silent_drop(monke
 
 
 def test_next_turn_drain_respects_origin_over_session_key_index(monkeypatch):
-    """Codex-caught combine gap: the next-turn drain must NOT deliver/claim/ACK a
-    completion to the session-key-index session when the event carries an exact
-    origin_ui_session_id for a DIFFERENT session. Otherwise the drain wins the
-    shared-queue race and ACKs the completion to the wrong session, leaving the
-    true origin empty. Origin is authoritative in the drain, mirroring
-    _resolve_completion_target in the background path."""
+    """Immutable origin beats the mutable index in the physical prefilter.
+
+    A mismatched indexed session cannot steal, claim, or settle the event. The
+    true origin receives one unchanged handoff to canonical ``_process_one``;
+    the streaming source performs no fresh settlement itself.
+    """
     _reset_wakeup_state()
     registry = _install_fake_process_registry(monkeypatch)
     delivery = _install_fake_durable_delivery_api(monkeypatch)
@@ -1286,20 +1356,20 @@ def test_next_turn_drain_respects_origin_over_session_key_index(monkeypatch):
     cfg.PROCESS_SESSION_INDEX["webui-session-1"] = "session-B"
     evt = _async_delegation_event(origin_ui_session_id="session-A")
     registry.completion_queue.put(evt)
+    handoffs = []
+    monkeypatch.setattr(bp, "_process_one", lambda event: handoffs.append(event))
 
-    # ... but a drain for session B must SKIP it (origin says A), taking no
-    # claim and no ack, and leaving the event on the queue for A.
-    notifications_b = streaming._drain_webui_process_notifications("session-B")
-    assert notifications_b == []
+    # Session B must skip/requeue unchanged, taking no claim or ACK.
+    assert streaming._drain_webui_process_notifications("session-B") is None
+    assert handoffs == []
     assert delivery["claim"] == []
     assert delivery["complete"] == []
 
-    # A drain for the origin session A delivers + acks exactly once.
-    notifications_a = streaming._drain_webui_process_notifications("session-A")
-    assert len(notifications_a) == 1
-    assert "ASYNC DELEGATION BATCH COMPLETE" in notifications_a[0]
-    assert [consumer for _evt, consumer in delivery["claim"]] == ["webui-next-turn"]
-    assert len(delivery["complete"]) == 1
+    # Session A hands off once; direct source settlement remains absent.
+    assert streaming._drain_webui_process_notifications("session-A") is None
+    assert handoffs == [evt]
+    assert delivery["claim"] == []
+    assert delivery["complete"] == []
     assert delivery["release"] == []
 
 
