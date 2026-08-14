@@ -7,32 +7,20 @@ gateway adapter this queue is drained by the host's main loop; in WebUI the
 queue was never read, so the agent never woke up from a ``notify_on_complete``
 finish. This module restores that behavior.
 
-The drain thread:
-    1. blocks on ``completion_queue.get()`` in a worker thread,
-    2. looks up the WebUI session_id from ``PROCESS_SESSION_INDEX`` (keyed on
-       the per-process ``session_key`` env var captured at spawn time),
-    3. formats a synthetic ``[IMPORTANT: ...]`` wakeup prompt, identical in
-       intent to ``cli._format_process_notification`` and
-       ``gateway.run._format_gateway_process_notification`` so the agent sees
-       the same payload regardless of host,
-    4. emits a canonical ``bg_task_complete`` SSE event (plus a temporary
-       ``process_complete`` alias for the migration window) on the active
-       stream(s) for that session (DEMOTED to pure live-view — an open tab
-       streams the turn live), records a server-side marker in
-       ``PENDING_BG_TASK_COMPLETIONS``,
-       and — Option Z PIVOT — starts the agent wakeup turn **directly
-       server-side** when the session is idle (``_start_server_side_wakeup_turn``
-       → ``routes.start_session_turn``). This needs NO browser round-trip, so
-       the closed-tab case works exactly like CLI / Telegram / gateway
-       self-wake. When a turn is already active the wakeup is NOT started here;
-       the ``PENDING_BG_TASK_COMPLETIONS`` marker is left for PR #2279's
-       next-turn drain (``api/streaming._drain_webui_process_notifications``).
+The normal drain thread and the finite current-turn fallback are physical
+readers of the same queue. Both hand fresh matching event objects to
+``_process_one``, the sole semantic owner. That owner resolves lineage,
+formats the synthetic ``[IMPORTANT: ...]`` wakeup prompt, emits the canonical
+``bg_task_complete`` SSE event (plus its temporary compatibility alias), and
+starts the canonical server-side turn when the lineage is idle. Busy ordinary
+work is recorded in ``DEFERRED_PROCESS_WAKEUPS`` for the teardown/idle lane;
+busy async work retains its durable source row and schedules the existing
+retry. No browser round-trip is required.
 
-The marker is *not* required for delivery — it's a telemetry-style flag the
-turn handler can read to know "this stream is a process_complete wakeup, not a
-human-typed prompt". It also lets the PR #2279 next-turn drain deliver the
-wakeup when a turn was active at completion time; the marker drains harmlessly
-on the next turn for the session.
+``PENDING_BG_TASK_COMPLETIONS`` is pending-state telemetry only. It does not
+own, format, acknowledge, or deliver completion work. The current-turn
+fallback likewise does not prepend completion text to a human turn: it only
+classifies physical queue events and hands fresh matches to ``_process_one``.
 
 Watch-pattern events share the same queue but produce a different SSE payload;
 this module routes them to the same listener so the frontend's single
@@ -824,10 +812,10 @@ def _emit_bg_task_complete_events_coalesced(session_id: str, payload: dict) -> i
     return 0
 
 
-# ── Coupling contract: agent ProcessRegistry cross-A/B dedupe key ──────────
-# This WebUI drain (B) and the merged upstream PR #2279 next-turn drain (A)
-# dedupe a process_id against a SINGLE shared key inside the agent's
-# ``tools.process_registry.ProcessRegistry``:
+# ── Coupling contract: agent ProcessRegistry completion source ACK ─────────
+# Both WebUI physical queue readers converge on ``_process_one`` and its
+# durable incorporation callback. That sole semantic owner dedupes a process_id
+# against one shared key inside ``tools.process_registry.ProcessRegistry``:
 #
 #   * READ  side: the PUBLIC ``is_completion_consumed(process_id)`` method
 #     (used in ``_process_one`` above) — stable public API.
@@ -1554,11 +1542,10 @@ def record_deferred_wakeup(
     """Persist a deferred process-completion wakeup for later redelivery.
 
     Called from ``_process_one`` when a completion arrives while a turn is
-    active (the Option Z drain branch cannot start a turn — it would 409).
-    The turn-teardown idle-hook (``drain_deferred_wakeups_for_session``)
-    redelivers it once the session goes idle, OR the PR #2279 next-turn drain
-    claims it if a user turn comes first. Whoever claims first wins (atomic
-    pop in ``claim_deferred_wakeups``); the other finds nothing.
+    active (starting another canonical turn would 409). The teardown/idle lane
+    (``drain_deferred_wakeups_for_session``) atomically claims and redelivers it
+    once the lineage goes idle. The current-turn fallback handles only fresh
+    physical queue events and never claims this deferred map.
 
     Idempotent per process_id: if the same process_id is already queued for
     this session (kill_process racing the reader thread), it is not appended
@@ -1612,13 +1599,11 @@ def record_deferred_wakeup(
 def claim_deferred_wakeups(session_id: str) -> list[dict]:
     """Atomically remove and return all deferred wakeups for *session_id*.
 
-    The single-delivery guarantee for the defer path: the dict ``pop`` under
-    ``DEFERRED_PROCESS_WAKEUPS_LOCK`` means whichever caller runs first
-    (turn-teardown idle-hook OR PR #2279 next-turn drain) gets the entries and
-    delivers them; every subsequent caller gets ``[]``. This is what makes the
-    teardown hook idempotent with the next-turn drain (no double-fire) AND
-    prevents a wakeup loop (the wakeup turn's own teardown re-runs the hook,
-    finds nothing already-claimed → no re-fire).
+    The teardown/idle lane's dict ``pop`` under
+    ``DEFERRED_PROCESS_WAKEUPS_LOCK`` is the defer path's single-delivery
+    guarantee. Later teardown callers get ``[]``. A wakeup turn's own teardown
+    therefore finds nothing already claimed, preventing both double-fire and a
+    wakeup loop. The current-turn fallback never calls this primitive.
     """
     if not session_id:
         return []
@@ -1651,9 +1636,8 @@ def drain_deferred_wakeups_for_session(session_id: str) -> int:
 
     Multi-stream / cancel-reconnect guard: if ANY other ACTIVE_RUNS row still
     exists for this session (a second stream from cancel/reconnect), the
-    session is NOT yet idle — leave the deferred entries untouched so a later
-    teardown (or the next-turn drain) delivers them. Only the teardown of the
-    LAST active stream for the session claims + fires.
+    session is NOT yet idle — leave the deferred entries untouched. Only the
+    teardown of the LAST active stream for the session claims + fires.
 
     Returns the number of wakeup turns started (0 when nothing pending or the
     session is still busy). Best-effort — never raises into the streaming
@@ -1696,8 +1680,8 @@ def drain_deferred_wakeups_for_session(session_id: str) -> int:
         # the rest 409. Since we already claimed + popped every entry (line
         # ~938) and discarded the PENDING marker, the losers' prompts would be
         # permanently lost. Instead: start exactly the FIRST prompt, and
-        # re-defer the remaining entries so each subsequent turn-teardown
-        # (or next-turn drain) delivers the next one — one wakeup per turn,
+        # re-defer the remaining entries so each subsequent server-turn
+        # teardown delivers the next one — one wakeup per turn,
         # which matches the single-prompt-per-turn design and the
         # BG_TASK_COMPLETE_EVENTS_SEEN dedup (no double-fire).
         leftover = [e for e in entries if str((e or {}).get("wakeup_prompt") or "").strip()]
@@ -1846,9 +1830,9 @@ def _start_server_side_wakeup_turn(
       - ``start_session_turn`` → ``_start_chat_stream_for_session`` serializes
         on the per-session agent lock and returns ``_status=409`` if a turn is
         already active. A human ``/api/chat/start`` racing this wakeup wins
-        (one starts, the other 409s). On 409 we re-queue the prompt via
+        (one starts, the other 409s). On 409 we re-record the prompt via
         ``record_deferred_wakeup`` (see below) so the racing turn's own
-        teardown idle-hook — or PR #2279's next-turn drain — redelivers it.
+        last-active teardown/idle hook redelivers it.
       - ``BG_TASK_COMPLETE_EVENTS_SEEN`` already deduped this process_id in
         ``_process_one`` before we were called, so a process wakes at most once.
 
@@ -1913,9 +1897,9 @@ def _start_server_side_wakeup_turn(
                 status == 503 and bool((resp or {}).get("retryable"))
             ):
                 # Raced an active turn (e.g. a human /api/chat/start, or a
-                # sibling deferred-wakeup thread). Re-defer this prompt so it
-                # is delivered by the winning turn's teardown / next-turn drain
-                # instead of being lost. The atomic claim in
+                # sibling deferred-wakeup thread). Re-defer this prompt so the
+                # winning turn's last-active teardown delivers it instead of
+                # losing it. The atomic claim in
                 # ``claim_deferred_wakeups`` still guarantees exactly-once
                 # delivery, and BG_TASK_COMPLETE_EVENTS_SEEN already deduped
                 # this process_id, so re-recording cannot double-fire.

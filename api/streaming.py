@@ -51,7 +51,6 @@ from api.config import (
     coerce_reasoning_effort_for_model,
     _main_model_request_overrides,
     PROCESS_SESSION_INDEX, PROCESS_SESSION_INDEX_LOCK,
-    BG_TASK_COMPLETE_EVENTS_SEEN, BG_TASK_COMPLETE_EVENTS_SEEN_LOCK,
 )
 from api.helpers import (
     redact_session_data,
@@ -2886,16 +2885,15 @@ def _bind_turn_session_identity(session_id: str):
 
 def _stale_completion_max_age_seconds() -> float:
     """Max age (seconds) a background-process completion may sit in the queue
-    before the WebUI drain treats it as stale and drops it instead of
-    prepending it to the user's next turn.
+    before the WebUI fallback terminally disposes it as stale.
 
     Completions older than this are silently consumed (not requeued) so a
-    notification that finally fires long after the user moved on cannot
-    contaminate an unrelated later turn. See nesquena/hermes-webui#4029.
+    notification that finally fires long after the user moved on cannot start
+    an unrelated server turn. Fresh work is handed unchanged to the canonical
+    background-process server-turn owner. See nesquena/hermes-webui#4029.
 
     Configurable via HERMES_WEBUI_STALE_COMPLETION_MAX_AGE_SECONDS. A value of
-    0 (or negative) disables age-gating and restores the legacy drain-all
-    behavior. Defaults to 6 hours.
+    0 (or negative) disables age-gating. Defaults to 6 hours.
     """
     raw = os.environ.get("HERMES_WEBUI_STALE_COMPLETION_MAX_AGE_SECONDS")
     if raw is not None:
@@ -2909,35 +2907,8 @@ def _stale_completion_max_age_seconds() -> float:
     return 6 * 60 * 60  # 6 hours
 
 
-def _format_process_notification(evt: dict) -> str:
-    """Format a completed background process notification for agent input."""
-    if not isinstance(evt, dict):
-        return ''
-    if evt.get('type') == 'async_delegation':
-        try:
-            from tools.process_registry import format_process_notification
-
-            return format_process_notification(evt) or ''
-        except Exception:
-            logger.debug("Failed to format async delegation notification", exc_info=True)
-            return ''
-    if evt.get('type') != 'completion':
-        return ''
-    _sid = evt.get('session_id', '')
-    _cmd = evt.get('command', '')
-    _exit = evt.get('exit_code', '')
-    _out = evt.get('output') or ''
-    if len(_out) > 4000:
-        _out = _out[:4000] + '\n... (truncated)'
-    return (
-        f"[IMPORTANT: Background process {_sid} completed (exit code {_exit}).\n"
-        f"Command: {_cmd}\n"
-        f"Output:\n{_out}]"
-    )
-
-
 def _mark_process_completion_consumed(process_registry, process_id: str) -> None:
-    """Best-effort bridge to the agent registry's private completion marker."""
+    """Record the isolated terminal disposition of a stale ordinary event."""
     try:
         with process_registry._lock:
             process_registry._completion_consumed.add(process_id)
@@ -2945,56 +2916,100 @@ def _mark_process_completion_consumed(process_registry, process_id: str) -> None
         logger.debug("Failed to mark process completion consumed", exc_info=True)
 
 
-def _completion_event_targets_webui_session(evt_session_key: str, session_id: str) -> bool:
-    """Return whether a completion event belongs to this WebUI session.
-
-    WebUI normally registers ``PROCESS_SESSION_INDEX[session_id] = session_id``.
-    Gateway/agent session keys can differ, so match the direct WebUI case first
-    and otherwise resolve through the same session-key index used by the
-    background wakeup path.
-    """
-    if not evt_session_key or not session_id:
+def _completion_event_matches_webui_lineage(
+    *,
+    evt_session_key: str,
+    evt_origin_ui_session_id: str,
+    evt_profile: str | None,
+    session_id: str,
+) -> bool:
+    """Fail closed unless immutable origin and current session share one lineage."""
+    if not session_id:
         return False
-    if evt_session_key == session_id:
-        return True
     try:
-        with PROCESS_SESSION_INDEX_LOCK:
-            return PROCESS_SESSION_INDEX.get(evt_session_key) == session_id
+        from api.session_lineage import resolve_session_lineage
+
+        current_before = resolve_session_lineage(
+            session_id,
+            expected_profile=evt_profile,
+        )
+        if evt_origin_ui_session_id:
+            selected_origin = evt_origin_ui_session_id
+        elif evt_session_key == session_id:
+            selected_origin = session_id
+        elif evt_session_key:
+            with PROCESS_SESSION_INDEX_LOCK:
+                selected_origin = PROCESS_SESSION_INDEX.get(evt_session_key) or ""
+        else:
+            selected_origin = ""
+        if not selected_origin:
+            return False
+        origin = resolve_session_lineage(
+            selected_origin,
+            expected_profile=current_before.profile,
+        )
+        current_after = resolve_session_lineage(
+            session_id,
+            expected_profile=current_before.profile,
+        )
+        before_identity = (
+            current_before.root_session_id,
+            current_before.delivery_session_id,
+            current_before.profile,
+        )
+        after_identity = (
+            current_after.root_session_id,
+            current_after.delivery_session_id,
+            current_after.profile,
+        )
+        origin_identity = (
+            origin.root_session_id,
+            origin.delivery_session_id,
+            origin.profile,
+        )
+        return before_identity == after_identity == origin_identity
     except Exception:
-        logger.debug("Failed to resolve completion event session key", exc_info=True)
+        logger.debug(
+            "Completion event did not resolve to the current WebUI lineage",
+            exc_info=True,
+        )
         return False
 
 
 def _drain_webui_process_notifications(
     session_id: str,
-    *,
-    pending_async_acceptances: list | None = None,
-) -> list[str]:
-    """Return completion notifications that belong to this WebUI session.
+) -> None:
+    """Hand fresh matching queue events to the canonical server-turn owner.
 
-    The agent registry completion queue is process-wide and events do not carry
-    the WebUI session key directly. Look up the live process session before
-    delivery so completions from other tabs remain queued for their owners.
+    This finite current-turn fallback only owns physical dequeue and fail-closed
+    lineage classification. It restores nonmatches before handing the original
+    event objects to ``background_process._process_one``; it never formats or
+    settles fresh source state itself.
     """
     if not session_id:
-        return []
+        return
     try:
         from tools.process_registry import process_registry
     except Exception:
-        return []
+        return
 
-    notifications: list[str] = []
     skipped_events: list[dict] = []
     async_retry_events: list[tuple[dict, bool]] = []
+    canonical_handoffs: list[dict] = []
     completion_queue = getattr(process_registry, 'completion_queue', None)
     if completion_queue is None:
-        return []
+        return
 
     # Computed once per drain (not per event): reads/validates the env cap a
     # single time so an invalid value logs at most one warning per drain.
     stale_completion_max_age = _stale_completion_max_age_seconds()
+    try:
+        scan_budget = completion_queue.qsize()
+    except Exception:
+        logger.debug("Failed to size process completion queue", exc_info=True)
+        return
 
-    while True:
+    for _ in range(scan_budget):
         try:
             evt = completion_queue.get_nowait()
         except queue.Empty:
@@ -3033,19 +3048,20 @@ def _drain_webui_process_notifications(
             evt_session_key = ''
             evt_origin_ui_session_id = ''
 
-        # origin_ui_session_id is the exact, immutable return address and is
-        # authoritative over the mutable session-key index (mirrors the
-        # background _process_one path via _resolve_completion_target). When it
-        # is present, this drain claims/ACKs the event ONLY for the origin
-        # session — otherwise the next-turn drain could win the shared-queue
-        # race and deliver+ACK a completion to the wrong (session-key-index)
-        # session, leaving the true origin empty. Fall back to the session-key
-        # target check only for legacy events that carry no origin address.
-        if evt_origin_ui_session_id:
-            if evt_origin_ui_session_id != session_id:
-                skipped_events.append(evt)
-                continue
-        elif not _completion_event_targets_webui_session(evt_session_key, session_id):
+        evt_profile = (
+            str(evt.get('origin_profile') or evt.get('profile') or '').strip() or None
+            if isinstance(evt, dict)
+            else None
+        )
+        # Immutable origin beats the compatibility index. This prefilter only
+        # prevents wrong-lineage physical dequeue/handoff; it never claims,
+        # ACKs, formats, or delivers a fresh completion itself.
+        if not _completion_event_matches_webui_lineage(
+            evt_session_key=evt_session_key,
+            evt_origin_ui_session_id=evt_origin_ui_session_id,
+            evt_profile=evt_profile,
+            session_id=session_id,
+        ):
             skipped_events.append(evt)
             continue
         # Age-gate stale completions: a completion that fires long after the
@@ -3062,7 +3078,7 @@ def _drain_webui_process_notifications(
                 stale_age = time.time() - completed_at
                 is_stale = stale_age > stale_completion_max_age
 
-        if is_async_delegation:
+        if is_stale and is_async_delegation:
             try:
                 claim = claim_async_delegation_delivery(evt, "webui-next-turn")
             except Exception:
@@ -3071,34 +3087,9 @@ def _drain_webui_process_notifications(
             if claim is None:
                 schedule_async_delegation_claim_retry(evt, completion_queue)
                 continue
-            notification_added = False
             try:
-                if is_stale:
-                    notification = ''
-                else:
-                    notification = _format_process_notification(evt)
-                    if not notification:
-                        raise ValueError(
-                            "async delegation formatter returned an empty notification"
-                        )
-                if notification:
-                    notifications.append(notification)
-                    notification_added = True
-                if is_stale:
-                    # Stale async events are an explicit terminal disposition.
-                    complete_async_delegation_delivery(evt, claim)
-                elif pending_async_acceptances is not None:
-                    pending_async_acceptances.append(
-                        (evt, claim, notification, completion_queue)
-                    )
-                else:
-                    # Direct callers without a live agent turn retain the
-                    # historical synchronous acceptance behavior used by
-                    # CLI-style drains.
-                    complete_async_delegation_delivery(evt, claim)
+                complete_async_delegation_delivery(evt, claim)
             except Exception:
-                if notification_added:
-                    notifications.pop()
                 release_async_delegation_delivery(evt, claim)
                 async_retry_events.append(
                     (evt, bool(getattr(claim, "durable", False)))
@@ -3109,28 +3100,11 @@ def _drain_webui_process_notifications(
                     exc_info=True,
                 )
                 continue
-            if is_stale:
-                logger.info(
-                    "Dropping stale async-delegation completion for session %s "
-                    "(age %.0fs > cap %.0fs)",
-                    evt_sid, stale_age, stale_completion_max_age,
-                )
-            continue
-
-        # The background completion worker may already own this event in its
-        # durable receipt flow. Its process-local seen marker is diagnostic,
-        # not an ACK: skip this duplicate queue copy without marking the core
-        # completion consumed. The deferred/receipt path remains restart-safe
-        # and performs the only terminal ACK after incorporation.
-        try:
-            with BG_TASK_COMPLETE_EVENTS_SEEN_LOCK:
-                owned_by_receipt_flow = any(
-                    evt_sid in process_ids
-                    for process_ids in BG_TASK_COMPLETE_EVENTS_SEEN.values()
-                )
-        except Exception:
-            owned_by_receipt_flow = False
-        if owned_by_receipt_flow:
+            logger.info(
+                "Dropping stale async-delegation completion for session %s "
+                "(age %.0fs > cap %.0fs)",
+                evt_sid, stale_age, stale_completion_max_age,
+            )
             continue
 
         if is_stale:
@@ -3142,52 +3116,41 @@ def _drain_webui_process_notifications(
             _mark_process_completion_consumed(process_registry, evt_sid)
             continue
 
-        notification = _format_process_notification(evt)
-        if notification:
-            notifications.append(notification)
-        # Matched but unformattable process completions are consumed rather than
-        # replayed forever on later turns.
-        _mark_process_completion_consumed(process_registry, evt_sid)
+        canonical_handoffs.append(evt)
 
-    for evt, durable in async_retry_events:
-        requeue_async_delegation_event(
-            evt,
-            completion_queue,
-            durable=durable,
-        )
     for evt in skipped_events:
         try:
             completion_queue.put(evt)
         except Exception:
             logger.debug("Failed to requeue process completion event", exc_info=True)
             break
-    return notifications
-
-
-def _accept_pending_async_delegations(
-    pending_async_acceptances: list,
-    *,
-    session_id: str,
-) -> list[str]:
-    """ACK turn-bound delegation claims and return rejected notifications."""
-    rejected_notifications: list[str] = []
-    for evt, claim, notification, completion_queue in pending_async_acceptances:
+    for evt, durable in async_retry_events:
+        requeue_async_delegation_event(
+            evt,
+            completion_queue,
+            durable=durable,
+        )
+    try:
+        from api.background_process import _process_one
+    except Exception:
+        for evt in canonical_handoffs:
+            completion_queue.put(evt)
+        logger.warning(
+            "Failed to import canonical completion owner; events requeued",
+            exc_info=True,
+        )
+        return
+    for evt in canonical_handoffs:
         try:
-            complete_async_delegation_delivery(evt, claim)
+            _process_one(evt)
         except Exception:
-            release_async_delegation_delivery(evt, claim)
-            requeue_async_delegation_event(
-                evt,
-                completion_queue,
-                durable=bool(getattr(claim, "durable", False)),
-            )
-            rejected_notifications.append(notification)
+            completion_queue.put(evt)
             logger.warning(
-                "Async delegation was not accepted into session %s; retrying later",
+                "Canonical completion handoff escaped synchronously for session %s; "
+                "event requeued",
                 session_id,
                 exc_info=True,
             )
-    return rejected_notifications
 
 
 def _attachment_name(att) -> str:
@@ -10899,15 +10862,8 @@ def _run_agent_streaming_core(
             )
             _ckpt_thread.start()
 
-            _pending_async_acceptances = []
-            _process_notifications = _drain_webui_process_notifications(
-                session_id,
-                pending_async_acceptances=_pending_async_acceptances,
-            )
-            _agent_msg_text = msg_text
-            if _process_notifications:
-                _agent_msg_text = "\n\n".join([*_process_notifications, msg_text]).strip()
-            user_message = _build_native_multimodal_message(workspace_ctx, _agent_msg_text, attachments, workspace, cfg=_cfg, active_provider=(resolved_provider or ""), active_model=(resolved_model or ""), requested_provider=(_session_requested_provider or ""))
+            _drain_webui_process_notifications(session_id)
+            user_message = _build_native_multimodal_message(workspace_ctx, msg_text, attachments, workspace, cfg=_cfg, active_provider=(resolved_provider or ""), active_model=(resolved_model or ""), requested_provider=(_session_requested_provider or ""))
             _persistent_state_before = _persistent_state_snapshot(_profile_home)
             _run_conversation_kwargs = _build_run_conversation_kwargs(
                 agent.run_conversation,
@@ -10932,36 +10888,6 @@ def _run_agent_streaming_core(
             if moa_config is not None:
                 _run_conversation_kwargs["moa_config"] = moa_config
 
-            # Finalize durable delegation claims at the current-turn acceptance
-            # boundary: immediately before invoking the agent with the message
-            # that contains their notifications. A failed ACK is removed from
-            # this turn and requeued so retry cannot create a duplicate prompt.
-            _rejected_async_notifications = _accept_pending_async_delegations(
-                _pending_async_acceptances,
-                session_id=session_id,
-            )
-            if _rejected_async_notifications:
-                for _notification in _rejected_async_notifications:
-                    try:
-                        _process_notifications.remove(_notification)
-                    except ValueError:
-                        pass
-                _agent_msg_text = msg_text
-                if _process_notifications:
-                    _agent_msg_text = "\n\n".join(
-                        [*_process_notifications, msg_text]
-                    ).strip()
-                user_message = _build_native_multimodal_message(
-                    workspace_ctx,
-                    _agent_msg_text,
-                    attachments,
-                    workspace,
-                    cfg=_cfg,
-                    active_provider=(resolved_provider or ""),
-                    active_model=(resolved_model or ""),
-                    requested_provider=(_session_requested_provider or ""),
-                )
-                _run_conversation_kwargs["user_message"] = user_message
             _result_partial_pre_call_context = list(_previous_context_messages)
             result = agent.run_conversation(**_run_conversation_kwargs)
             _active_turn_identity = _resolve_active_turn_authority(

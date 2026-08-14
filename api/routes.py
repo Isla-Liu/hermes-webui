@@ -23430,8 +23430,9 @@ def _start_chat_stream_for_session(
     # process_complete wakeup (ours-original, Option B): if this session has a
     # pending process_complete marker (set by api/background_process.py drain),
     # discard it atomically here. Mirrors the goal_continue pattern (#1932).
-    # The marker is server-internal telemetry; the actual wakeup is delivered
-    # either server-side (Option Z) or via the PR #2279 next-turn drain.
+    # The marker is server-internal telemetry, not a delivery owner. Fresh
+    # physical events converge on background_process._process_one; deferred
+    # entries are owned by the teardown/idle lane.
     try:
         from api.session_lineage import resolve_session_lineage
 
@@ -24336,8 +24337,8 @@ def start_session_turn(
 
     Returns the same dict ``_start_chat_stream_for_session`` returns, including
     ``_status`` (200 on start, 409 when a turn is already active). On 409 the
-    caller must leave the ``PENDING_BG_TASK_COMPLETIONS`` marker in place so the
-    PR #2279 next-turn drain delivers the wakeup when the active turn ends.
+    caller records or retains the deferred-map entry so the teardown/idle lane
+    redelivers it; ``PENDING_BG_TASK_COMPLETIONS`` remains telemetry only.
     """
     msg = str(message or "").strip()
     if _is_silent_control_message(msg):
@@ -24560,8 +24561,8 @@ def _handle_bg_task_complete_ack(handler, body):
     This endpoint is therefore a pure no-op for state — it exists so an open
     tab can confirm receipt of the live-view event and so a future follow-up
     (analytics, telemetry) has a stable hook. ``PENDING_BG_TASK_COMPLETIONS``
-    is consumed by ``_start_chat_stream_for_session`` when the server-side
-    wakeup turn (or the next human turn / PR #2279 next-turn drain) runs.
+    is pending telemetry consumed by ``_start_chat_stream_for_session``; it is
+    not completion delivery, formatting, or source-ACK authority.
     """
     from api.helpers import j
 

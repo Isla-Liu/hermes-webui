@@ -9374,9 +9374,9 @@ BG_TASK_COMPLETE_EVENTS_SEEN_LOCK = threading.Lock()
 # was lost forever. DEFERRED_PROCESS_WAKEUPS persists the actual prompt(s) so a
 # turn-teardown idle-hook (api/streaming) can redeliver them once the session
 # goes idle — symmetric with the idle branch (idle now → fire now; busy now →
-# fire at turn-end). Atomic claim (pop under lock) guarantees single delivery:
-# whoever claims first (teardown hook OR next-turn drain) fires; the other
-# finds nothing → no double-fire, no wakeup loop.
+# fire at turn-end). The teardown/idle lane atomically claims (pop under lock);
+# later teardown callers find nothing. The current-turn fallback never claims
+# this map, so there is no double-fire or wakeup loop.
 DEFERRED_PROCESS_WAKEUPS: dict = {}  # session_id -> list[{"process_id", "wakeup_prompt"}]
 DEFERRED_PROCESS_WAKEUPS_LOCK = threading.Lock()
 
