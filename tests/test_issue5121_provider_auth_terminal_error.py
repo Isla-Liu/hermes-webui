@@ -478,7 +478,7 @@ def test_auth_exception_retry_structured_failure_still_emits_error(
              "_attempt_credential_self_heal",
              return_value=heal_rt,
          ):
-        streaming._run_agent_streaming(
+        streaming._run_agent_streaming_core(
             session_id=session.session_id,
             msg_text=session.pending_user_message,
             model="test-model",

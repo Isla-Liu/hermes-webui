@@ -6,7 +6,7 @@
   },
   "behavior_only_manifest": {},
   "chosen_p6_design_b": {
-    "expected_admitted_thread_target_edges": 4,
+    "expected_admitted_thread_target_edges": 6,
     "expected_core_direct_calls": {
       "_run_agent_streaming_core": 1,
       "_run_gateway_chat_streaming_core": 1
@@ -14,11 +14,11 @@
     "expected_direct_calls_by_symbol": {
       "_active_run_stream_for_session": 9,
       "_active_stream_blocks_chat_start": 4,
-      "_prepare_chat_start_session_for_stream": 12,
+      "_prepare_chat_start_session_for_stream": 18,
       "_run_admitted_agent_streaming": 2,
-      "register_active_run": 16
+      "register_active_run": 22
     },
-    "expected_direct_calls_total": 43,
+    "expected_direct_calls_total": 55,
     "required_signature_universe": [
       "_run_admitted_agent_streaming",
       "_run_admitted_gateway_chat_streaming",
@@ -78,8 +78,8 @@
       {
         "identity": [
           "api/routes.py",
-          "_start_hidden_admitted_turn",
-          "_prepare_chat_start_session_for_stream",
+          "_reserve_turn_admission",
+          "register_active_run",
           1,
           "call"
         ]
@@ -87,8 +87,8 @@
       {
         "identity": [
           "api/routes.py",
-          "_reserve_turn_admission",
-          "register_active_run",
+          "_start_chat_stream_for_session",
+          "_active_run_stream_for_session",
           1,
           "call"
         ]
@@ -115,7 +115,7 @@
         "identity": [
           "api/routes.py",
           "_start_chat_stream_for_session",
-          "_active_run_stream_for_session",
+          "_prepare_chat_start_session_for_stream",
           1,
           "call"
         ]
@@ -123,7 +123,16 @@
       {
         "identity": [
           "api/routes.py",
-          "_start_chat_stream_for_session",
+          "_start_hidden_admitted_turn",
+          "_prepare_chat_start_session_for_stream",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "api/routes.py",
+          "_start_regeneration_stream_locked",
           "_prepare_chat_start_session_for_stream",
           1,
           "call"
@@ -158,6 +167,69 @@
       },
       {
         "identity": [
+          "tests/test_cancelling_run_not_attachable.py",
+          "test_fresh_cancelling_run_is_not_attachable_but_stays_busy",
+          "register_active_run",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_cancelling_run_not_attachable.py",
+          "test_hidden_tab_status_does_not_resurrect_a_cancelling_run",
+          "register_active_run",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_cancelling_run_not_attachable.py",
+          "test_hidden_tab_status_ignores_cancelling_run_with_live_stream_channel",
+          "register_active_run",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_cancelling_run_not_attachable.py",
+          "test_running_run_is_still_attachable_and_busy",
+          "register_active_run",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_cancelling_run_not_attachable.py",
+          "test_stale_cancelling_orphan_stops_blocking_and_is_reclaimed",
+          "register_active_run",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_cancelling_run_not_attachable.py",
+          "test_stale_cancelling_run_with_live_channel_is_not_reclaimed",
+          "register_active_run",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_early_session_title.py",
+          "test_prepare_chat_start_does_not_overwrite_manual_title",
+          "_prepare_chat_start_session_for_stream",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
           "tests/test_early_session_title.py",
           "test_prepare_chat_start_sets_provisional_title_for_default_session",
           "_prepare_chat_start_session_for_stream",
@@ -169,15 +241,6 @@
         "identity": [
           "tests/test_early_session_title.py",
           "test_prepare_chat_start_sets_provisional_title_in_eager_save_mode",
-          "_prepare_chat_start_session_for_stream",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_early_session_title.py",
-          "test_prepare_chat_start_does_not_overwrite_manual_title",
           "_prepare_chat_start_session_for_stream",
           1,
           "call"
@@ -213,15 +276,6 @@
       {
         "identity": [
           "tests/test_hidden_turn_admission.py",
-          "test_prepared_chat_turn_is_the_single_submitted_writer_with_readback",
-          "_prepare_chat_start_session_for_stream",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_hidden_turn_admission.py",
           "test_local_admitted_wrapper_parks_aborts_and_releases_once",
           "register_active_run",
           1,
@@ -239,27 +293,9 @@
       },
       {
         "identity": [
-          "tests/test_inflight_stream_reuse.py",
-          "test_turn_admission_requires_exact_owner_and_releases_once",
-          "register_active_run",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_inflight_stream_reuse.py",
-          "test_turn_admission_requires_exact_owner_and_releases_once",
-          "register_active_run",
-          2,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_inflight_stream_reuse.py",
-          "test_turn_admission_requires_exact_owner_and_releases_once",
-          "_active_stream_blocks_chat_start",
+          "tests/test_hidden_turn_admission.py",
+          "test_prepared_chat_turn_is_the_single_submitted_writer_with_readback",
+          "_prepare_chat_start_session_for_stream",
           1,
           "call"
         ]
@@ -278,15 +314,6 @@
           "tests/test_inflight_stream_reuse.py",
           "test_turn_admission_requires_exact_owner_and_releases_once",
           "_active_run_stream_for_session",
-          2,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_inflight_stream_reuse.py",
-          "test_turn_admission_requires_exact_owner_and_releases_once",
-          "_active_stream_blocks_chat_start",
           2,
           "call"
         ]
@@ -306,6 +333,42 @@
           "test_turn_admission_requires_exact_owner_and_releases_once",
           "_active_run_stream_for_session",
           4,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_inflight_stream_reuse.py",
+          "test_turn_admission_requires_exact_owner_and_releases_once",
+          "_active_stream_blocks_chat_start",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_inflight_stream_reuse.py",
+          "test_turn_admission_requires_exact_owner_and_releases_once",
+          "_active_stream_blocks_chat_start",
+          2,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_inflight_stream_reuse.py",
+          "test_turn_admission_requires_exact_owner_and_releases_once",
+          "register_active_run",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_inflight_stream_reuse.py",
+          "test_turn_admission_requires_exact_owner_and_releases_once",
+          "register_active_run",
+          2,
           "call"
         ]
       },
@@ -338,9 +401,45 @@
       },
       {
         "identity": [
-          "tests/test_issue6623_cancel_owner_race.py",
-          "test_issue6623_stale_cancelled_run_cleared_after_grace",
-          "register_active_run",
+          "tests/test_issue6611_regeneration_authority.py",
+          "test_current_fork_child_materialization_binds_and_accepts_its_new_turn",
+          "_prepare_chat_start_session_for_stream",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue6611_regeneration_transaction.py",
+          "test_issue_artifact_rows_follow_production_regeneration_and_error_settlement",
+          "_prepare_chat_start_session_for_stream",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue6611_regeneration_transaction.py",
+          "test_prepare_marks_new_fork_turn_in_eager_materialization",
+          "_prepare_chat_start_session_for_stream",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue6611_regeneration_transaction.py",
+          "test_prepare_marks_new_fork_turn_in_eager_materialization",
+          "_prepare_chat_start_session_for_stream",
+          2,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue6611_regeneration_transaction.py",
+          "test_prepare_mirrors_active_turn_token_to_context_before_timestamp_mutation",
+          "_prepare_chat_start_session_for_stream",
           1,
           "call"
         ]
@@ -348,7 +447,7 @@
       {
         "identity": [
           "tests/test_issue6623_cancel_owner_race.py",
-          "test_issue6623_stale_cancelled_run_without_cancelled_at_reclaimed_via_started_at",
+          "test_issue6623_completed_successor_teardown_cleared_owner_blocks_old_finalizer",
           "register_active_run",
           1,
           "call"
@@ -367,7 +466,7 @@
         "identity": [
           "tests/test_issue6623_cancel_owner_race.py",
           "test_issue6623_recent_cancel_not_reaped_despite_old_started_at",
-          "register_active_run",
+          "_active_run_stream_for_session",
           1,
           "call"
         ]
@@ -376,33 +475,6 @@
         "identity": [
           "tests/test_issue6623_cancel_owner_race.py",
           "test_issue6623_recent_cancel_not_reaped_despite_old_started_at",
-          "_active_run_stream_for_session",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_issue6623_cancel_owner_race.py",
-          "test_issue6623_stale_recovery_successor_survives_delayed_cancel_finalizer",
-          "register_active_run",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_issue6623_cancel_owner_race.py",
-          "test_issue6623_stale_recovery_successor_survives_delayed_cancel_finalizer",
-          "_active_run_stream_for_session",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_issue6623_cancel_owner_race.py",
-          "test_issue6623_replaced_session_successor_survives_delayed_cancel_finalizer",
           "register_active_run",
           1,
           "call"
@@ -429,7 +501,43 @@
       {
         "identity": [
           "tests/test_issue6623_cancel_owner_race.py",
-          "test_issue6623_completed_successor_teardown_cleared_owner_blocks_old_finalizer",
+          "test_issue6623_replaced_session_successor_survives_delayed_cancel_finalizer",
+          "register_active_run",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue6623_cancel_owner_race.py",
+          "test_issue6623_stale_cancelled_run_cleared_after_grace",
+          "register_active_run",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue6623_cancel_owner_race.py",
+          "test_issue6623_stale_cancelled_run_without_cancelled_at_reclaimed_via_started_at",
+          "register_active_run",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue6623_cancel_owner_race.py",
+          "test_issue6623_stale_recovery_successor_survives_delayed_cancel_finalizer",
+          "_active_run_stream_for_session",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue6623_cancel_owner_race.py",
+          "test_issue6623_stale_recovery_successor_survives_delayed_cancel_finalizer",
           "register_active_run",
           1,
           "call"
@@ -493,7 +601,7 @@
         "identity": [
           "tests/test_stale_stream_cleanup.py",
           "test_chat_start_remains_blocked_by_unproven_old_active_run",
-          "register_active_run",
+          "_active_run_stream_for_session",
           1,
           "call"
         ]
@@ -502,15 +610,6 @@
         "identity": [
           "tests/test_stale_stream_cleanup.py",
           "test_chat_start_remains_blocked_by_unproven_old_active_run",
-          "_active_run_stream_for_session",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_stale_stream_cleanup.py",
-          "test_live_worker_age_is_never_release_authority",
           "register_active_run",
           1,
           "call"
@@ -521,6 +620,15 @@
           "tests/test_stale_stream_cleanup.py",
           "test_live_worker_age_is_never_release_authority",
           "_active_run_stream_for_session",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_stale_stream_cleanup.py",
+          "test_live_worker_age_is_never_release_authority",
+          "register_active_run",
           1,
           "call"
         ]
@@ -582,6 +690,24 @@
           1,
           "thread_target_alias"
         ]
+      },
+      {
+        "identity": [
+          "api/routes.py",
+          "_start_regeneration_stream_locked",
+          "_run_admitted_agent_streaming",
+          1,
+          "thread_target_alias"
+        ]
+      },
+      {
+        "identity": [
+          "api/routes.py",
+          "_start_regeneration_stream_locked",
+          "_run_admitted_gateway_chat_streaming",
+          1,
+          "thread_target_alias"
+        ]
       }
     ],
     "assignment_aliases": [
@@ -598,6 +724,24 @@
         "identity": [
           "api/routes.py",
           "_start_chat_stream_for_session",
+          "_run_admitted_gateway_chat_streaming",
+          1,
+          "assignment_alias"
+        ]
+      },
+      {
+        "identity": [
+          "api/routes.py",
+          "_start_regeneration_stream_locked",
+          "_run_admitted_agent_streaming",
+          1,
+          "assignment_alias"
+        ]
+      },
+      {
+        "identity": [
+          "api/routes.py",
+          "_start_regeneration_stream_locked",
           "_run_admitted_gateway_chat_streaming",
           1,
           "assignment_alias"
@@ -646,42 +790,6 @@
       {
         "identity": [
           "tests/test_gateway_approval_runs_api.py",
-          "test_start_chat_stream_marks_gateway_run_pending_before_thread_start",
-          "_active_run_stream_for_session",
-          1,
-          "setattr"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_gateway_approval_runs_api.py",
-          "test_start_chat_stream_marks_gateway_run_pending_before_thread_start",
-          "_prepare_chat_start_session_for_stream",
-          1,
-          "setattr"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_gateway_approval_runs_api.py",
-          "test_start_chat_stream_clears_gateway_run_state_when_thread_start_fails",
-          "_active_run_stream_for_session",
-          1,
-          "setattr"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_gateway_approval_runs_api.py",
-          "test_start_chat_stream_clears_gateway_run_state_when_thread_start_fails",
-          "_prepare_chat_start_session_for_stream",
-          1,
-          "setattr"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_gateway_approval_runs_api.py",
           "test_gateway_admitted_wrapper_parks_before_core_and_owner_cleans_once",
           "_run_admitted_gateway_chat_streaming",
           1,
@@ -690,9 +798,36 @@
       },
       {
         "identity": [
-          "tests/test_goal_command_webui.py",
-          "test_chat_start_forwards_goal_related_to_gateway_worker",
-          "_active_stream_blocks_chat_start",
+          "tests/test_gateway_approval_runs_api.py",
+          "test_start_chat_stream_clears_gateway_run_state_when_thread_start_fails",
+          "_active_run_stream_for_session",
+          1,
+          "setattr"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_gateway_approval_runs_api.py",
+          "test_start_chat_stream_clears_gateway_run_state_when_thread_start_fails",
+          "_prepare_chat_start_session_for_stream",
+          1,
+          "setattr"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_gateway_approval_runs_api.py",
+          "test_start_chat_stream_marks_gateway_run_pending_before_thread_start",
+          "_active_run_stream_for_session",
+          1,
+          "setattr"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_gateway_approval_runs_api.py",
+          "test_start_chat_stream_marks_gateway_run_pending_before_thread_start",
+          "_prepare_chat_start_session_for_stream",
           1,
           "setattr"
         ]
@@ -702,6 +837,15 @@
           "tests/test_goal_command_webui.py",
           "test_chat_start_forwards_goal_related_to_gateway_worker",
           "_active_run_stream_for_session",
+          1,
+          "setattr"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_goal_command_webui.py",
+          "test_chat_start_forwards_goal_related_to_gateway_worker",
+          "_active_stream_blocks_chat_start",
           1,
           "setattr"
         ]
@@ -736,34 +880,7 @@
       {
         "identity": [
           "tests/test_issue4812_session_sse_stream.py",
-          "test_session_route_prefers_last_event_id_then_query_fallback",
-          "_active_run_stream_for_session",
-          1,
-          "setattr"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_issue4812_session_sse_stream.py",
           "test_session_route_arms_deadline_immediately_after_headers",
-          "_active_run_stream_for_session",
-          1,
-          "setattr"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_issue4812_session_sse_stream.py",
-          "test_session_route_emits_snapshot_without_id_for_missing_cursor_and_keepalive",
-          "_active_run_stream_for_session",
-          1,
-          "setattr"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_issue4812_session_sse_stream.py",
-          "test_session_route_resyncs_when_run_completes_inside_idle_wait",
           "_active_run_stream_for_session",
           1,
           "setattr"
@@ -781,15 +898,6 @@
       {
         "identity": [
           "tests/test_issue4812_session_sse_stream.py",
-          "test_session_route_no_resync_when_idle_journal_unchanged",
-          "_active_run_stream_for_session",
-          1,
-          "setattr"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_issue4812_session_sse_stream.py",
           "test_session_route_blocks_hidden_sessions_before_replay_or_live_attach",
           "_active_run_stream_for_session",
           1,
@@ -799,7 +907,7 @@
       {
         "identity": [
           "tests/test_issue4812_session_sse_stream.py",
-          "test_session_route_live_delivery_skips_replayed_active_run_items",
+          "test_session_route_bounds_sent_event_id_deduplication",
           "_active_run_stream_for_session",
           1,
           "setattr"
@@ -817,7 +925,25 @@
       {
         "identity": [
           "tests/test_issue4812_session_sse_stream.py",
-          "test_session_route_unsubscribes_when_replay_disconnects",
+          "test_session_route_emits_snapshot_when_reconciliation_fails",
+          "_active_run_stream_for_session",
+          1,
+          "setattr"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue4812_session_sse_stream.py",
+          "test_session_route_emits_snapshot_without_id_for_missing_cursor_and_keepalive",
+          "_active_run_stream_for_session",
+          1,
+          "setattr"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue4812_session_sse_stream.py",
+          "test_session_route_live_delivery_skips_replayed_active_run_items",
           "_active_run_stream_for_session",
           1,
           "setattr"
@@ -835,6 +961,24 @@
       {
         "identity": [
           "tests/test_issue4812_session_sse_stream.py",
+          "test_session_route_no_resync_when_idle_journal_unchanged",
+          "_active_run_stream_for_session",
+          1,
+          "setattr"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue4812_session_sse_stream.py",
+          "test_session_route_prefers_last_event_id_then_query_fallback",
+          "_active_run_stream_for_session",
+          1,
+          "setattr"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue4812_session_sse_stream.py",
           "test_session_route_reconciles_late_attach_cutoff_once",
           "_active_run_stream_for_session",
           1,
@@ -844,7 +988,7 @@
       {
         "identity": [
           "tests/test_issue4812_session_sse_stream.py",
-          "test_session_route_emits_snapshot_when_reconciliation_fails",
+          "test_session_route_resyncs_when_run_completes_inside_idle_wait",
           "_active_run_stream_for_session",
           1,
           "setattr"
@@ -853,8 +997,17 @@
       {
         "identity": [
           "tests/test_issue4812_session_sse_stream.py",
-          "test_session_route_bounds_sent_event_id_deduplication",
+          "test_session_route_unsubscribes_when_replay_disconnects",
           "_active_run_stream_for_session",
+          1,
+          "setattr"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue5567_profile_home_override.py",
+          "test_run_agent_streaming_falls_back_to_skill_module_patch_for_static_modules",
+          "register_active_run",
           1,
           "setattr"
         ]
@@ -870,9 +1023,18 @@
       },
       {
         "identity": [
-          "tests/test_issue5567_profile_home_override.py",
-          "test_run_agent_streaming_falls_back_to_skill_module_patch_for_static_modules",
-          "register_active_run",
+          "tests/test_issue6611_regeneration_transaction.py",
+          "test_locked_preacceptance_exception_restores_the_transaction_snapshot",
+          "_prepare_chat_start_session_for_stream",
+          1,
+          "setattr"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue6611_regeneration_transaction.py",
+          "test_regeneration_lock_winner_blocks_a_later_normal_send",
+          "_active_run_stream_for_session",
           1,
           "setattr"
         ]
@@ -892,7 +1054,7 @@
       {
         "identity": [
           "tests/test_auto_compression_terminal_failure.py",
-          "test_compression_exhausted_after_session_rotation_preserves_snapshot_and_errors_on_continuation",
+          "test_apperror_payload_enriched_before_enqueue",
           "_run_agent_streaming_core",
           1,
           "call"
@@ -901,7 +1063,7 @@
       {
         "identity": [
           "tests/test_auto_compression_terminal_failure.py",
-          "test_apperror_payload_enriched_before_enqueue",
+          "test_compression_exhausted_after_session_rotation_preserves_snapshot_and_errors_on_continuation",
           "_run_agent_streaming_core",
           1,
           "call"
@@ -918,9 +1080,45 @@
       },
       {
         "identity": [
-          "tests/test_gateway_approval_legacy_path.py",
-          "test_legacy_sse_loop_relays_approval_event",
-          "_run_gateway_chat_streaming_core",
+          "tests/test_compression_snapshot_revision.py",
+          "test_auth_self_heal_refreshes_revision_after_first_agent_persists_user",
+          "_run_agent_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_compression_snapshot_revision.py",
+          "test_self_heal_repeated_prompt_never_accepts_shifted_historical_row",
+          "_run_agent_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_compression_snapshot_revision.py",
+          "test_stale_compression_snapshot_emits_actionable_error_without_replaying_turn",
+          "_run_agent_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_compression_snapshot_revision.py",
+          "test_webui_run_missing_explicit_profile_passes_no_foreign_revision",
+          "_run_agent_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_compression_snapshot_revision.py",
+          "test_webui_run_passes_revision_from_original_snapshot_when_sqlite_changes_before_agent",
+          "_run_agent_streaming_core",
           1,
           "call"
         ]
@@ -929,6 +1127,24 @@
         "identity": [
           "tests/test_gateway_approval_legacy_path.py",
           "test_legacy_approval_records_run_id_for_response_relay",
+          "_run_gateway_chat_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_gateway_approval_legacy_path.py",
+          "test_legacy_approval_without_run_id_retires_locally",
+          "_run_gateway_chat_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_gateway_approval_legacy_path.py",
+          "test_legacy_sse_loop_relays_approval_event",
           "_run_gateway_chat_streaming_core",
           1,
           "call"
@@ -946,15 +1162,6 @@
       {
         "identity": [
           "tests/test_gateway_approval_legacy_path.py",
-          "test_legacy_teardown_retires_live_gateway_head_mirror",
-          "_run_gateway_chat_streaming_core",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_gateway_approval_legacy_path.py",
           "test_legacy_teardown_preserves_local_pending_entry",
           "_run_gateway_chat_streaming_core",
           1,
@@ -964,7 +1171,52 @@
       {
         "identity": [
           "tests/test_gateway_approval_legacy_path.py",
-          "test_legacy_approval_without_run_id_retires_locally",
+          "test_legacy_teardown_retires_live_gateway_head_mirror",
+          "_run_gateway_chat_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_gateway_approval_runs_api.py",
+          "test_gateway_admitted_wrapper_parks_before_core_and_owner_cleans_once",
+          "_run_gateway_chat_streaming_core",
+          1,
+          "setattr"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_gateway_approval_runs_api.py",
+          "test_gateway_chat_completions_path_unchanged",
+          "_run_gateway_chat_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_gateway_approval_runs_api.py",
+          "test_gateway_empty_response_no_approval_banner",
+          "_run_gateway_chat_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_gateway_approval_runs_api.py",
+          "test_gateway_missing_stream_releases_pending_start_state_for_local_cancel",
+          "_run_gateway_chat_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_gateway_approval_runs_api.py",
+          "test_gateway_runs_api_cancel_does_not_emit_empty_response",
           "_run_gateway_chat_streaming_core",
           1,
           "call"
@@ -995,51 +1247,6 @@
           "_run_gateway_chat_streaming_core",
           1,
           "thread_target"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_gateway_approval_runs_api.py",
-          "test_gateway_missing_stream_releases_pending_start_state_for_local_cancel",
-          "_run_gateway_chat_streaming_core",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_gateway_approval_runs_api.py",
-          "test_gateway_runs_api_cancel_does_not_emit_empty_response",
-          "_run_gateway_chat_streaming_core",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_gateway_approval_runs_api.py",
-          "test_gateway_empty_response_no_approval_banner",
-          "_run_gateway_chat_streaming_core",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_gateway_approval_runs_api.py",
-          "test_gateway_chat_completions_path_unchanged",
-          "_run_gateway_chat_streaming_core",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_gateway_approval_runs_api.py",
-          "test_gateway_admitted_wrapper_parks_before_core_and_owner_cleans_once",
-          "_run_gateway_chat_streaming_core",
-          1,
-          "setattr"
         ]
       },
       {
@@ -1099,25 +1306,7 @@
       {
         "identity": [
           "tests/test_issue3929_error_preserves_partial.py",
-          "test_silent_failure_preserves_partials",
-          "_run_agent_streaming_core",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_issue3929_error_preserves_partial.py",
-          "test_result_error_omits_turn_duration_for_missing_or_future_origin",
-          "_run_agent_streaming_core",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_issue3929_error_preserves_partial.py",
-          "test_exception_preserves_partials",
+          "test_empty_partials_do_not_create_spurious_messages",
           "_run_agent_streaming_core",
           1,
           "call"
@@ -1135,7 +1324,25 @@
       {
         "identity": [
           "tests/test_issue3929_error_preserves_partial.py",
-          "test_empty_partials_do_not_create_spurious_messages",
+          "test_exception_preserves_partials",
+          "_run_agent_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue3929_error_preserves_partial.py",
+          "test_result_error_omits_turn_duration_for_missing_or_future_origin",
+          "_run_agent_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue3929_error_preserves_partial.py",
+          "test_silent_failure_preserves_partials",
           "_run_agent_streaming_core",
           1,
           "call"
@@ -1163,24 +1370,6 @@
         "identity": [
           "tests/test_issue3929_process_wakeup_pause.py",
           "test_cancelled_stale_process_wakeup_credential_failure_records_pause",
-          "_run_agent_streaming_core",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_issue3929_process_wakeup_pause.py",
-          "test_streaming_success_pause_clear_serializes_against_concurrent_suppression",
-          "_run_agent_streaming_core",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_issue3929_process_wakeup_pause.py",
-          "test_streaming_success_pause_clear_preserves_concurrent_session_update",
           "_run_agent_streaming_core",
           1,
           "call"
@@ -1225,7 +1414,7 @@
       {
         "identity": [
           "tests/test_issue3929_process_wakeup_pause.py",
-          "test_streaming_late_cancel_after_pause_clear_save_persists_restored_pause",
+          "test_stale_credential_empty_process_wakeup_still_records_pause",
           "_run_agent_streaming_core",
           1,
           "call"
@@ -1234,7 +1423,7 @@
       {
         "identity": [
           "tests/test_issue3929_process_wakeup_pause.py",
-          "test_streaming_post_save_cancel_after_success_commit_emits_done",
+          "test_streaming_late_cancel_after_pause_clear_save_persists_restored_pause",
           "_run_agent_streaming_core",
           1,
           "call"
@@ -1252,7 +1441,25 @@
       {
         "identity": [
           "tests/test_issue3929_process_wakeup_pause.py",
-          "test_stale_credential_empty_process_wakeup_still_records_pause",
+          "test_streaming_post_save_cancel_after_success_commit_emits_done",
+          "_run_agent_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue3929_process_wakeup_pause.py",
+          "test_streaming_success_pause_clear_preserves_concurrent_session_update",
+          "_run_agent_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue3929_process_wakeup_pause.py",
+          "test_streaming_success_pause_clear_serializes_against_concurrent_suppression",
           "_run_agent_streaming_core",
           1,
           "call"
@@ -1271,6 +1478,15 @@
         "identity": [
           "tests/test_issue5121_provider_auth_terminal_error.py",
           "_run_stream",
+          "_run_agent_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_issue5121_provider_auth_terminal_error.py",
+          "test_auth_exception_retry_structured_failure_still_emits_error",
           "_run_agent_streaming_core",
           1,
           "call"
@@ -1324,7 +1540,7 @@
       {
         "identity": [
           "tests/test_issue5567_profile_home_override.py",
-          "test_run_agent_streaming_installs_and_resets_profile_home_override",
+          "test_run_agent_streaming_falls_back_to_skill_module_patch_for_static_modules",
           "_run_agent_streaming_core",
           1,
           "call"
@@ -1333,7 +1549,7 @@
       {
         "identity": [
           "tests/test_issue5567_profile_home_override.py",
-          "test_run_agent_streaming_falls_back_to_skill_module_patch_for_static_modules",
+          "test_run_agent_streaming_installs_and_resets_profile_home_override",
           "_run_agent_streaming_core",
           1,
           "call"
@@ -1360,7 +1576,7 @@
       {
         "identity": [
           "tests/test_issue_progress_echo_dedupe.py",
-          "test_visible_progress_token_reasoning_and_interim_are_deduped",
+          "test_final_answer_prefix_reasoning_echo_is_not_journaled_or_merged",
           "_run_agent_streaming_core",
           1,
           "call"
@@ -1378,7 +1594,7 @@
       {
         "identity": [
           "tests/test_issue_progress_echo_dedupe.py",
-          "test_final_answer_prefix_reasoning_echo_is_not_journaled_or_merged",
+          "test_visible_progress_token_reasoning_and_interim_are_deduped",
           "_run_agent_streaming_core",
           1,
           "call"
@@ -1405,7 +1621,16 @@
       {
         "identity": [
           "tests/test_sprint42.py",
-          "TestRuntimeRouteInjection.test_runtime_route_is_forwarded_from_resolver_into_agent_init",
+          "TestCredentialPoolBackwardCompat.test_older_agent_without_credential_pool_does_not_crash",
+          "_run_agent_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_sprint42.py",
+          "TestRuntimeRouteInjection._capture_clarify_timeout",
           "_run_agent_streaming_core",
           1,
           "call"
@@ -1423,16 +1648,7 @@
       {
         "identity": [
           "tests/test_sprint42.py",
-          "TestRuntimeRouteInjection.test_clarify_callback_passes_configured_timeout_seconds",
-          "_run_agent_streaming_core",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_sprint42.py",
-          "TestCredentialPoolBackwardCompat.test_older_agent_without_credential_pool_does_not_crash",
+          "TestRuntimeRouteInjection.test_runtime_route_is_forwarded_from_resolver_into_agent_init",
           "_run_agent_streaming_core",
           1,
           "call"
@@ -1450,16 +1666,7 @@
       {
         "identity": [
           "tests/test_webui_gateway_chat_backend.py",
-          "test_gateway_chat_worker_translates_sse_and_persists_session",
-          "_run_gateway_chat_streaming_core",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_webui_gateway_chat_backend.py",
-          "test_gateway_completion_writeback_reuses_one_correlated_checkpoint",
+          "test_gateway_chat_worker_backfills_context_only_turns_into_display",
           "_run_gateway_chat_streaming_core",
           1,
           "call"
@@ -1513,7 +1720,52 @@
       {
         "identity": [
           "tests/test_webui_gateway_chat_backend.py",
+          "test_gateway_chat_worker_emits_goal_continue_for_goal_related_turn",
+          "_run_gateway_chat_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_webui_gateway_chat_backend.py",
+          "test_gateway_chat_worker_forwards_image_attachments_as_multimodal_parts",
+          "_run_gateway_chat_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_webui_gateway_chat_backend.py",
+          "test_gateway_chat_worker_keeps_repeated_identical_visible_turns",
+          "_run_gateway_chat_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_webui_gateway_chat_backend.py",
+          "test_gateway_chat_worker_normalizes_prefill_slice_before_system_prefix",
+          "_run_gateway_chat_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_webui_gateway_chat_backend.py",
           "test_gateway_chat_worker_persists_reasoning_and_tool_state_on_terminal_error",
+          "_run_gateway_chat_streaming_core",
+          1,
+          "call"
+        ]
+      },
+      {
+        "identity": [
+          "tests/test_webui_gateway_chat_backend.py",
+          "test_gateway_chat_worker_preserves_old_visible_turns_when_context_is_compacted",
           "_run_gateway_chat_streaming_core",
           1,
           "call"
@@ -1540,15 +1792,6 @@
       {
         "identity": [
           "tests/test_webui_gateway_chat_backend.py",
-          "test_gateway_chat_worker_emits_goal_continue_for_goal_related_turn",
-          "_run_gateway_chat_streaming_core",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_webui_gateway_chat_backend.py",
           "test_gateway_chat_worker_skips_goal_judge_for_non_goal_turn",
           "_run_gateway_chat_streaming_core",
           1,
@@ -1558,7 +1801,7 @@
       {
         "identity": [
           "tests/test_webui_gateway_chat_backend.py",
-          "test_gateway_chat_worker_normalizes_prefill_slice_before_system_prefix",
+          "test_gateway_chat_worker_translates_sse_and_persists_session",
           "_run_gateway_chat_streaming_core",
           1,
           "call"
@@ -1567,34 +1810,7 @@
       {
         "identity": [
           "tests/test_webui_gateway_chat_backend.py",
-          "test_gateway_chat_worker_backfills_context_only_turns_into_display",
-          "_run_gateway_chat_streaming_core",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_webui_gateway_chat_backend.py",
-          "test_gateway_chat_worker_preserves_old_visible_turns_when_context_is_compacted",
-          "_run_gateway_chat_streaming_core",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_webui_gateway_chat_backend.py",
-          "test_gateway_chat_worker_keeps_repeated_identical_visible_turns",
-          "_run_gateway_chat_streaming_core",
-          1,
-          "call"
-        ]
-      },
-      {
-        "identity": [
-          "tests/test_webui_gateway_chat_backend.py",
-          "test_gateway_chat_worker_forwards_image_attachments_as_multimodal_parts",
+          "test_gateway_completion_writeback_reuses_one_correlated_checkpoint",
           "_run_gateway_chat_streaming_core",
           1,
           "call"

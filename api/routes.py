@@ -2879,6 +2879,7 @@ from api.config import (
     ACTIVE_RUNS,
     ACTIVE_RUNS_LOCK,
     register_stream_owner,
+    unregister_stream_owner,
     register_session_writeback_owner,
     clear_session_writeback_owner_if_owned,
     stream_owner_session_id,
@@ -22992,19 +22993,32 @@ def _start_regeneration_stream_locked(
     if compression_recovery_payload_for_session(s):
         clear_compression_recovery(s)
     stream_id = uuid.uuid4().hex
+    try:
+        admission = _reserve_turn_admission(s, stream_id)
+    except Exception as exc:
+        from api.session_lineage import LineageTurnBusyError
+
+        if isinstance(exc, LineageTurnBusyError):
+            return {
+                "error": "session already has an active stream",
+                "active_stream_id": stream_id,
+                "_status": 409,
+            }
+        raise
     gateway_starting = False
     thread_started = False
     save_attempted = False
     accepted = False
     journal_event = {}
-    release_worker = threading.Event()
-    abort_worker = threading.Event()
     worker_thread = None
 
     worker_target = (
-        _run_gateway_chat_streaming if backend_is_gateway else _run_agent_streaming
+        _run_admitted_gateway_chat_streaming
+        if backend_is_gateway
+        else _run_admitted_agent_streaming
     )
     worker_kwargs = {
+        "admission": admission,
         "model_provider": model_provider,
         "goal_related": goal_related,
     }
@@ -23013,21 +23027,12 @@ def _start_regeneration_stream_locked(
     if moa_config and not backend_is_gateway:
         worker_kwargs["moa_config"] = moa_config
 
-    def _gated_worker():
-        release_worker.wait()
-        if abort_worker.is_set():
-            return
-        worker_target(
-            s.session_id,
-            turn.message_text,
-            model,
-            workspace,
-            stream_id,
-            copy.deepcopy(turn.attachments),
-            **worker_kwargs,
-        )
-
     def _cleanup_owned_start():
+        from api.session_lineage import release_turn_admission
+
+        admission.abort.set()
+        admission.gate.set()
+        release_turn_admission(admission)
         if goal_related:
             STREAM_GOAL_RELATED.pop(stream_id, None)
         with STREAMS_LOCK:
@@ -23100,7 +23105,6 @@ def _start_regeneration_stream_locked(
         )
         diag.stage("stream_registration") if diag else None
         stream = create_stream_channel()
-        register_stream_owner(stream_id, s.session_id)
         with STREAMS_LOCK:
             STREAMS[stream_id] = stream
         if goal_related:
@@ -23112,24 +23116,38 @@ def _start_regeneration_stream_locked(
             _mark_gateway_run_starting(stream_id)
 
         diag.stage("worker_thread_start") if diag else None
-        worker_thread = threading.Thread(target=_gated_worker, daemon=True)
+        worker_thread = threading.Thread(
+            target=worker_target,
+            args=(
+                s.session_id,
+                turn.message_text,
+                model,
+                workspace,
+                stream_id,
+                copy.deepcopy(turn.attachments),
+            ),
+            kwargs=worker_kwargs,
+            daemon=True,
+        )
         worker_thread.start()
         thread_started = True
+        if not admission.admitted.wait(timeout=5.0):
+            raise RuntimeError("agent worker failed to park")
+        if admission.abort.is_set():
+            raise RuntimeError("agent worker aborted before gate")
         save_attempted = True
         s.save()
         accepted = True
         set_last_workspace(workspace)
-        release_worker.set()
+        admission.gate.set()
     except Exception as exc:
-        abort_worker.set()
-        release_worker.set()
+        _cleanup_owned_start()
         if (
             thread_started
             and worker_thread is not None
             and callable(getattr(worker_thread, "join", None))
         ):
             worker_thread.join(timeout=1)
-        _cleanup_owned_start()
         if accepted:
             if journal_event:
                 try:
@@ -23173,7 +23191,7 @@ def _start_regeneration_stream_locked(
                 )
         raise
 
-    release_worker.set()
+    admission.gate.set()
     if was_hidden_empty_session:
         publish_session_list_changed(
             "session_new",
@@ -24017,7 +24035,7 @@ def recover_incorporated_completion_delivery(completion_context) -> bool:
                 )
             # The pending receipt plus exact sidecar identity supersedes generic
             # young-pending grace after a fresh process has no live owner.
-            setattr(session, "active_stream_id", None)
+            session.active_stream_id = None
         if (
             getattr(session, "pending_turn_id", None) != completion_context.turn_id
             or getattr(session, "pending_completion_key", None)
